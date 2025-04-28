@@ -13,8 +13,8 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 /// @title Geny
 /// @author compez.eth
 /// @notice ERC20 token with a total supply of 256 million, designed to empower creators and fuel boundless innovation within the Genyleap ecosystem.
+/// @dev This contract manages the GENY token for the Genyleap ecosystem, enabling token distribution, burning, and recovery.
 /// @custom:security-contact security@genyleap.com
-
 contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
 
     // === Constants ===
@@ -170,7 +170,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
         uint256 contractBalance = balanceOf(address(this));
         // Check for duplicate recipients using a bitmap for efficiency
         uint256 bitmap;
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i; i < len; ++i) {
             address recipient = recipients[i];
             _validateRecipient(recipient);
             if (amounts[i] == 0) revert ZeroAmount();
@@ -184,7 +184,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
 
         if (totalAmount > contractBalance) revert InsufficientBalance();
 
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i; i < len; ++i) {
             _transfer(address(this), recipients[i], amounts[i]);
         }
 
@@ -243,7 +243,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     }
 
     /// @notice Withdraws ETH from the contract balance
-    /// @dev Callable only by owner, ensures ETH is not locked in the contract; includes reason for transparency
+    /// @dev Callable only by owner, ensures ETH is not locked in the contract using nonReentrant and Checks-Effects-Interactions pattern
     /// @param recipient Address to receive the ETH
     /// @param amount Amount of ETH to withdraw (in wei)
     /// @param reason Reason for the withdrawal (e.g., "Contract maintenance", "Error recovery")
@@ -371,6 +371,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     // === Fallback ===
 
     /// @notice Fallback to receive ETH
+    /// @dev Emits EthReceived event when ETH is received
     receive() external payable {
         emit EthReceived(msg.sender, msg.value);
     }
