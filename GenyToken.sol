@@ -14,6 +14,7 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 /// @author compez.eth
 /// @notice ERC20 token with a total supply of 256 million, designed to empower creators and fuel boundless innovation within the Genyleap ecosystem.
 /// @custom:security-contact security@genyleap.com
+
 contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
 
     // === Constants ===
@@ -116,7 +117,6 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     error InvalidCooldown();
     error InvalidBatchLimit();
     error InvalidImplementation();
-
     
     // === Initializer ===
 
@@ -318,7 +318,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
         return totalSupplyBurned;
     }
 
-    // === Internal Functions ===
+    // === Private Functions ===
 
     /// @dev Authorizes the contract upgrade
     /// @dev Only callable by owner; ensures new implementation complies with existing restrictions
