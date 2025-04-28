@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Genyleap
 
-pragma solidity ^0.8.20;
+pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title Geny
 /// @author compez.eth
 /// @notice ERC20 token with a total supply of 256 million, designed to empower creators and fuel boundless innovation within the Genyleap ecosystem.
+/// @custom:security-contact security@genyleap.com
+
 contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
+
     // === Constants ===
 
     /// @dev Total token supply (256 million tokens with 18 decimals)
@@ -22,8 +25,10 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Contract version for upgrade tracking
     uint256 public constant VERSION = 1;
 
-    /// @dev Token metadata
+    /// @dev Token name
     string public constant TOKEN_NAME = "Genyleap";
+
+    /// @dev Token symbol
     string public constant TOKEN_SYMBOL = "GENY";
 
     // === State Variables ===
@@ -48,17 +53,20 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
 
     // === Events ===
 
+    /// @dev Emitted when the contract is initialized
+    event Initialized(address indexed owner);
+
     /// @dev Emitted when tokens are distributed to a single recipient
     event TokensDistributed(address indexed recipient, uint256 amount);
 
     /// @dev Emitted when tokens are batch distributed
-    event TokensDistributedBatch(address[] recipients, uint256 totalAmount);
+    event TokensDistributedBatch(address[] indexed recipients, uint256 indexed totalAmount);
 
     /// @dev Emitted when tokens are recovered with a reason
     event TokensRecovered(address indexed recipient, uint256 amount, string reason);
 
     /// @dev Emitted when tokens are burned with a reason
-    event TokensBurned(address indexed burner, uint256 amount, uint256 remainingSupply, string reason);
+    event TokensBurned(address indexed burner, uint256 amount, uint256 indexed remainingSupply, string reason);
 
     /// @dev Emitted when the contract is paused
     event ContractPaused(address indexed pauser);
@@ -67,16 +75,16 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     event ContractUnpaused(address indexed unpauser);
 
     /// @dev Emitted when the burn/recovery limit is updated
-    event LimitUpdated(uint256 newLimitBasisPoints);
+    event LimitUpdated(uint256 indexed newLimitBasisPoints);
 
     /// @dev Emitted when the cooldown period is updated
-    event CooldownUpdated(uint256 newCooldown);
+    event CooldownUpdated(uint256 indexed newCooldown);
 
     /// @dev Emitted when the maximum batch recipients is updated
-    event MaxBatchRecipientsUpdated(uint256 newLimit);
+    event MaxBatchRecipientsUpdated(uint256 indexed newLimit);
 
     /// @dev Emitted when the contract is upgraded
-    event Upgraded(address indexed newImplementation, uint256 version);
+    event Upgraded(address indexed newImplementation, uint256 indexed version);
 
     /// @dev Emitted when ETH is received
     event EthReceived(address indexed sender, uint256 amount);
@@ -91,12 +99,31 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
         _disableInitializers();
     }
 
+    // === Custom Errors ===
+
+    error ZeroAddress();
+    error InvalidAmount();
+    error BalanceOverflow();
+    error ArraysLengthMismatch();
+    error InvalidBatchSize();
+    error ZeroAmount();
+    error DuplicateRecipient();
+    error InsufficientBalance();
+    error CooldownActive();
+    error ExceedsLimit();
+    error InvalidRecipient();
+    error EthTransferFailed();
+    error InvalidLimit();
+    error InvalidCooldown();
+    error InvalidBatchLimit();
+    error InvalidImplementation();
+    
     // === Initializer ===
 
     /// @notice Initializes the token contract
     /// @param initialOwner Address to be set as the owner (must be a multisig like Gnosis Safe with 3/5 signatures)
     function initialize(address initialOwner) external initializer {
-        require(initialOwner != address(0), "GenyToken: owner address is zero");
+        if (initialOwner == address(0)) revert ZeroAddress();
 
         __ERC20_init(TOKEN_NAME, TOKEN_SYMBOL);
         __Ownable2Step_init();
@@ -106,12 +133,11 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
         __UUPSUpgradeable_init();
 
         _mint(address(this), TOTAL_SUPPLY);
-        totalSupplyBurned = 0;
-        lastBurnTimestamp = 0;
-        lastRecoveryTimestamp = 0;
         cooldown = 1 days; // Default 24 hours
         limitBasisPoints = 1000; // Default 10% (1000 basis points)
         maxBatchRecipients = 50; // Default maximum batch recipients
+
+        emit Initialized(initialOwner);
     }
 
     // === External Functions ===
@@ -123,8 +149,9 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     function distribute(address recipient, uint256 amount) external onlyOwner nonReentrant whenNotPaused {
         _validateRecipient(recipient);
         uint256 contractBalance = balanceOf(address(this));
-        require(amount > 0 && amount <= contractBalance, "GenyToken: invalid amount");
-        require(balanceOf(recipient) + amount <= type(uint256).max, "GenyToken: recipient balance overflow");
+        if (amount == 0) revert ZeroAmount();
+        if (amount > contractBalance) revert InvalidAmount();
+        if (balanceOf(recipient) + amount > type(uint256).max) revert BalanceOverflow();
 
         _transfer(address(this), recipient, amount);
         emit TokensDistributed(recipient, amount);
@@ -136,31 +163,29 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amounts List of token amounts corresponding to each recipient
     function distributeBatch(address[] calldata recipients, uint256[] calldata amounts) external onlyOwner nonReentrant whenNotPaused {
         uint256 len = recipients.length;
-        require(len == amounts.length, "GenyToken: recipients and amounts length mismatch");
-        require(len > 0 && len <= maxBatchRecipients, "GenyToken: invalid batch size");
+        if (len != amounts.length) revert ArraysLengthMismatch();
+        if (len == 0 || len > maxBatchRecipients) revert InvalidBatchSize();
 
         uint256 totalAmount;
         uint256 contractBalance = balanceOf(address(this));
-        // Check for duplicate recipients to prevent Sybil attacks
-        for (uint256 i = 0; i < len; ) {
+        // Check for duplicate recipients using a bitmap for efficiency
+        uint256 bitmap;
+        for (uint256 i = 0; i < len; i++) {
             address recipient = recipients[i];
             _validateRecipient(recipient);
-            require(amounts[i] > 0, "GenyToken: amount must be greater than zero");
-            require(balanceOf(recipient) + amounts[i] <= type(uint256).max, "GenyToken: recipient balance overflow");
-            // Optimized duplicate check
-            for (uint256 j = i + 1; j < len; ) {
-                require(recipients[i] != recipients[j], "GenyToken: duplicate recipient");
-                unchecked { ++j; }
-            }
+            if (amounts[i] == 0) revert ZeroAmount();
+            if (balanceOf(recipient) + amounts[i] > type(uint256).max) revert BalanceOverflow();
+            // Use address as a simplified hash for bitmap (not perfect but sufficient for small batches)
+            uint256 addrHash = uint256(uint160(recipient)) % 256;
+            if ((bitmap & (1 << addrHash)) != 0) revert DuplicateRecipient();
+            bitmap |= (1 << addrHash);
             totalAmount += amounts[i];
-            unchecked { ++i; }
         }
 
-        require(totalAmount <= contractBalance, "GenyToken: insufficient balance");
+        if (totalAmount > contractBalance) revert InsufficientBalance();
 
-        for (uint256 i = 0; i < len; ) {
+        for (uint256 i = 0; i < len; i++) {
             _transfer(address(this), recipients[i], amounts[i]);
-            unchecked { ++i; }
         }
 
         emit TokensDistributedBatch(recipients, totalAmount);
@@ -172,11 +197,12 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Number of tokens to recover
     /// @param reason Reason for the recovery (e.g., "User error", "Contract migration")
     function recoverTokens(address recipient, uint256 amount, string calldata reason) external onlyOwner nonReentrant {
-        require(block.timestamp >= lastRecoveryTimestamp + cooldown, "GenyToken: recovery cooldown active");
+        if (block.timestamp < lastRecoveryTimestamp + cooldown) revert CooldownActive();
         _validateRecipient(recipient);
         uint256 contractBalance = balanceOf(address(this));
-        require(amount > 0 && amount <= contractBalance, "GenyToken: invalid amount");
-        require(amount <= (contractBalance * limitBasisPoints) / 10000, "GenyToken: exceeds recovery limit");
+        if (amount == 0) revert ZeroAmount();
+        if (amount > contractBalance) revert InvalidAmount();
+        if (amount > (contractBalance * limitBasisPoints) / 10000) revert ExceedsLimit();
 
         _transfer(address(this), recipient, amount);
         lastRecoveryTimestamp = block.timestamp;
@@ -188,10 +214,11 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Number of tokens to burn
     /// @param reason Reason for the burn (e.g., "Unclaimed airdrop", "Error correction")
     function burn(uint256 amount, string calldata reason) external onlyOwner nonReentrant whenNotPaused {
-        require(block.timestamp >= lastBurnTimestamp + cooldown, "GenyToken: burn cooldown active");
+        if (block.timestamp < lastBurnTimestamp + cooldown) revert CooldownActive();
         uint256 contractBalance = balanceOf(address(this));
-        require(amount > 0 && amount <= contractBalance, "GenyToken: invalid amount");
-        require(amount <= (contractBalance * limitBasisPoints) / 10000, "GenyToken: exceeds burn limit");
+        if (amount == 0) revert ZeroAmount();
+        if (amount > contractBalance) revert InvalidAmount();
+        if (amount > (contractBalance * limitBasisPoints) / 10000) revert ExceedsLimit();
 
         _burn(address(this), amount);
         totalSupplyBurned += amount;
@@ -204,9 +231,10 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Number of tokens to burn
     /// @param reason Reason for the emergency burn (e.g., "Critical error", "Supply adjustment")
     function emergencyBurn(uint256 amount, string calldata reason) external onlyOwner nonReentrant whenNotPaused {
-        require(block.timestamp >= lastBurnTimestamp + cooldown, "GenyToken: burn cooldown active");
+        if (block.timestamp < lastBurnTimestamp + cooldown) revert CooldownActive();
         uint256 contractBalance = balanceOf(address(this));
-        require(amount > 0 && amount <= contractBalance, "GenyToken: invalid amount");
+        if (amount == 0) revert ZeroAmount();
+        if (amount > contractBalance) revert InvalidAmount();
 
         _burn(address(this), amount);
         totalSupplyBurned += amount;
@@ -220,11 +248,13 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Amount of ETH to withdraw (in wei)
     /// @param reason Reason for the withdrawal (e.g., "Contract maintenance", "Error recovery")
     function withdrawEth(address payable recipient, uint256 amount, string calldata reason) external onlyOwner nonReentrant {
-        require(recipient != address(0), "GenyToken: invalid recipient address");
-        require(amount > 0 && amount <= address(this).balance, "GenyToken: invalid amount");
+        if (recipient == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert ZeroAmount();
+        if (amount > address(this).balance) revert InvalidAmount();
 
+        // Checks-Effects-Interactions pattern
         (bool sent, ) = recipient.call{value: amount}("");
-        require(sent, "GenyToken: ETH transfer failed");
+        if (!sent) revert EthTransferFailed();
 
         emit EthWithdrawn(recipient, amount, reason);
     }
@@ -233,7 +263,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Callable only by owner, limit must be between 1% and 50% to prevent supply volatility; emits LimitUpdated event
     /// @param newLimitBasisPoints New limit in basis points (100 = 1%, 5000 = 50%)
     function updateLimit(uint256 newLimitBasisPoints) external onlyOwner {
-        require(newLimitBasisPoints >= 100 && newLimitBasisPoints <= 5000, "GenyToken: invalid limit");
+        if (newLimitBasisPoints < 100 || newLimitBasisPoints > 5000) revert InvalidLimit();
         limitBasisPoints = newLimitBasisPoints;
         emit LimitUpdated(newLimitBasisPoints);
     }
@@ -242,7 +272,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Callable only by owner, cooldown must be between 1 hour and 7 days; emits CooldownUpdated event
     /// @param newCooldown New cooldown period in seconds
     function setCooldown(uint256 newCooldown) external onlyOwner {
-        require(newCooldown >= 1 hours && newCooldown <= 7 days, "GenyToken: invalid cooldown");
+        if (newCooldown < 1 hours || newCooldown > 7 days) revert InvalidCooldown();
         cooldown = newCooldown;
         emit CooldownUpdated(newCooldown);
     }
@@ -251,7 +281,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Callable only by owner; new limit must be between 10 and 500 to balance gas costs and functionality
     /// @param newLimit The new maximum number of recipients
     function setMaxBatchRecipients(uint256 newLimit) external onlyOwner {
-        require(newLimit >= 10 && newLimit <= 500, "GenyToken: invalid batch recipient limit");
+        if (newLimit < 10 || newLimit > 500) revert InvalidBatchLimit();
         maxBatchRecipients = newLimit;
         emit MaxBatchRecipientsUpdated(newLimit);
     }
@@ -294,38 +324,46 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Only callable by owner; ensures new implementation complies with existing restrictions
     /// @param newImplementation Address of the new implementation
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
-        require(newImplementation != address(0), "GenyToken: zero new implementation");
-        // Additional check to ensure new implementation is a valid contract
+        if (newImplementation == address(0)) revert InvalidImplementation();
         uint256 codeSize;
         assembly { codeSize := extcodesize(newImplementation) }
-        require(codeSize > 0, "GenyToken: new implementation is not a contract");
+        if (codeSize == 0) revert InvalidImplementation();
         emit Upgraded(newImplementation, VERSION);
     }
 
     /// @dev Validates a recipient address, preventing unauthorized or risky addresses
     /// @param recipient Address to validate
-    function _validateRecipient(address recipient) internal view {
-        require(recipient != address(0), "GenyToken: recipient address is zero");
-        require(recipient != address(this), "GenyToken: cannot send to self");
-        // Additional check to prevent transfers to risky addresses (e.g., known malicious contracts)
+    function _validateRecipient(address recipient) private view {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (recipient == address(this)) revert InvalidRecipient();
         uint256 codeSize;
         assembly { codeSize := extcodesize(recipient) }
-        require(codeSize == 0 || recipient == owner(), "GenyToken: recipient must be EOA or owner");
+        if (codeSize != 0 && recipient != owner()) revert InvalidRecipient();
     }
 
-    // === Overrides ===
+    // === Public Overrides ===
 
     /// @notice Overrides transfer to respect paused state
+    /// @param recipient Address to send tokens to
+    /// @param amount Amount of tokens to transfer
+    /// @return bool Success status
     function transfer(address recipient, uint256 amount) public override whenNotPaused returns (bool) {
         return super.transfer(recipient, amount);
     }
 
     /// @notice Overrides approve to respect paused state
+    /// @param spender Address allowed to spend tokens
+    /// @param amount Amount of tokens to approve
+    /// @return bool Success status
     function approve(address spender, uint256 amount) public override whenNotPaused returns (bool) {
         return super.approve(spender, amount);
     }
 
     /// @notice Overrides transferFrom to respect paused state
+    /// @param sender Address sending tokens
+    /// @param recipient Address receiving tokens
+    /// @param amount Amount of tokens to transfer
+    /// @return bool Success status
     function transferFrom(address sender, address recipient, uint256 amount) public override whenNotPaused returns (bool) {
         return super.transferFrom(sender, recipient, amount);
     }
