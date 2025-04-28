@@ -150,8 +150,8 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
         _validateRecipient(recipient);
         uint256 contractBalance = balanceOf(address(this));
         if (amount == 0) revert ZeroAmount();
-        if (amount >= contractBalance + 1) revert InvalidAmount();
-        if (balanceOf(recipient) + amount >= type(uint256).max + 1) revert BalanceOverflow();
+        if (amount > contractBalance) revert InvalidAmount();
+        if (balanceOf(recipient) + amount > type(uint256).max) revert BalanceOverflow();
 
         _transfer(address(this), recipient, amount);
         emit TokensDistributed(recipient, amount);
@@ -164,7 +164,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     function distributeBatch(address[] calldata recipients, uint256[] calldata amounts) external onlyOwner nonReentrant whenNotPaused {
         uint256 len = recipients.length;
         if (len != amounts.length) revert ArraysLengthMismatch();
-        if (len == 0 || len > maxBatchRecipients) revert InvalidBatchSize();
+        if (len == 0 || len >= maxBatchRecipients + 1) revert InvalidBatchSize();
 
         uint256 totalAmount;
         uint256 contractBalance = balanceOf(address(this));
@@ -174,7 +174,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
             address recipient = recipients[i];
             _validateRecipient(recipient);
             if (amounts[i] == 0) revert ZeroAmount();
-            if (balanceOf(recipient) + amounts[i] >= type(uint256).max + 1) revert BalanceOverflow();
+            if (balanceOf(recipient) + amounts[i] > type(uint256).max) revert BalanceOverflow();
             // Use address as a simplified hash for bitmap (not perfect but sufficient for small batches)
             uint256 addrHash = uint256(uint160(recipient)) % 256;
             if ((bitmap & (1 << addrHash)) != 0) revert DuplicateRecipient();
@@ -182,7 +182,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
             totalAmount += amounts[i];
         }
 
-        if (totalAmount >= contractBalance + 1) revert InsufficientBalance();
+        if (totalAmount > contractBalance) revert InsufficientBalance();
 
         for (uint256 i; i < len; ++i) {
             _transfer(address(this), recipients[i], amounts[i]);
@@ -197,12 +197,12 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Number of tokens to recover
     /// @param reason Reason for the recovery (e.g., "User error", "Contract migration")
     function recoverTokens(address recipient, uint256 amount, string calldata reason) external onlyOwner nonReentrant {
-        if (block.timestamp <= lastRecoveryTimestamp + cooldown - 1) revert CooldownActive();
+        if (block.timestamp < lastRecoveryTimestamp + cooldown) revert CooldownActive();
         _validateRecipient(recipient);
         uint256 contractBalance = balanceOf(address(this));
         if (amount == 0) revert ZeroAmount();
-        if (amount >= contractBalance + 1) revert InvalidAmount();
-        if (amount >= ((contractBalance * limitBasisPoints) / 10000) + 1) revert ExceedsLimit();
+        if (amount > contractBalance) revert InvalidAmount();
+        if (amount > (contractBalance * limitBasisPoints) / 10000) revert ExceedsLimit();
 
         _transfer(address(this), recipient, amount);
         lastRecoveryTimestamp = block.timestamp;
@@ -214,11 +214,11 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Number of tokens to burn
     /// @param reason Reason for the burn (e.g., "Unclaimed airdrop", "Error correction")
     function burn(uint256 amount, string calldata reason) external onlyOwner nonReentrant whenNotPaused {
-        if (block.timestamp <= lastBurnTimestamp + cooldown - 1) revert CooldownActive();
+        if (block.timestamp < lastBurnTimestamp + cooldown) revert CooldownActive();
         uint256 contractBalance = balanceOf(address(this));
         if (amount == 0) revert ZeroAmount();
-        if (amount >= contractBalance + 1) revert InvalidAmount();
-        if (amount >= ((contractBalance * limitBasisPoints) / 10000) + 1) revert ExceedsLimit();
+        if (amount > contractBalance) revert InvalidAmount();
+        if (amount > (contractBalance * limitBasisPoints) / 10000) revert ExceedsLimit();
 
         _burn(address(this), amount);
         totalSupplyBurned += amount;
@@ -231,10 +231,10 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @param amount Number of tokens to burn
     /// @param reason Reason for the emergency burn (e.g., "Critical error", "Supply adjustment")
     function emergencyBurn(uint256 amount, string calldata reason) external onlyOwner nonReentrant whenNotPaused {
-        if (block.timestamp <= lastBurnTimestamp + cooldown - 1) revert CooldownActive();
+        if (block.timestamp < lastBurnTimestamp + cooldown) revert CooldownActive();
         uint256 contractBalance = balanceOf(address(this));
         if (amount == 0) revert ZeroAmount();
-        if (amount >= contractBalance + 1) revert InvalidAmount();
+        if (amount > contractBalance) revert InvalidAmount();
 
         _burn(address(this), amount);
         totalSupplyBurned += amount;
@@ -250,7 +250,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     function withdrawEth(address payable recipient, uint256 amount, string calldata reason) external onlyOwner nonReentrant {
         if (recipient == address(0)) revert InvalidRecipient();
         if (amount == 0) revert ZeroAmount();
-        if (amount >= address(this).balance + 1) revert InvalidAmount();
+        if (amount > address(this).balance) revert InvalidAmount();
 
         // Checks-Effects-Interactions pattern
         (bool sent, ) = recipient.call{value: amount}("");
@@ -263,7 +263,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Callable only by owner, limit must be between 1% and 50% to prevent supply volatility; emits LimitUpdated event
     /// @param newLimitBasisPoints New limit in basis points (100 = 1%, 5000 = 50%)
     function updateLimit(uint256 newLimitBasisPoints) external onlyOwner {
-        if (newLimitBasisPoints <= 99 || newLimitBasisPoints >= 5001) revert InvalidLimit();
+        if (newLimitBasisPoints < 100 || newLimitBasisPoints > 5000) revert InvalidLimit();
         limitBasisPoints = newLimitBasisPoints;
         emit LimitUpdated(newLimitBasisPoints);
     }
@@ -272,7 +272,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Callable only by owner, cooldown must be between 1 hour and 7 days; emits CooldownUpdated event
     /// @param newCooldown New cooldown period in seconds
     function setCooldown(uint256 newCooldown) external onlyOwner {
-        if (newCooldown <= (1 hours) - 1 || newCooldown >= (7 days) + 1) revert InvalidCooldown();
+        if (newCooldown < 1 hours || newCooldown > 7 days) revert InvalidCooldown();
         cooldown = newCooldown;
         emit CooldownUpdated(newCooldown);
     }
@@ -281,7 +281,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     /// @dev Callable only by owner; new limit must be between 10 and 500 to balance gas costs and functionality
     /// @param newLimit The new maximum number of recipients
     function setMaxBatchRecipients(uint256 newLimit) external onlyOwner {
-        if (newLimit < 10 || newLimit > 500) revert InvalidBatchLimit();
+        if (newLimit <= 9 || newLimit >= 501) revert InvalidBatchLimit();
         maxBatchRecipients = newLimit;
         emit MaxBatchRecipientsUpdated(newLimit);
     }
