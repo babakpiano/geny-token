@@ -14,7 +14,6 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 /// @author compez.eth
 /// @notice ERC20 token with a total supply of 256 million, designed to empower creators and fuel boundless innovation within the Genyleap ecosystem.
 /// @custom:security-contact security@genyleap.com
-
 contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
 
     // === Constants ===
@@ -117,6 +116,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     error InvalidCooldown();
     error InvalidBatchLimit();
     error InvalidImplementation();
+
     
     // === Initializer ===
 
@@ -170,7 +170,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
         uint256 contractBalance = balanceOf(address(this));
         // Check for duplicate recipients using a bitmap for efficiency
         uint256 bitmap;
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i; i < len; ++i) {
             address recipient = recipients[i];
             _validateRecipient(recipient);
             if (amounts[i] == 0) revert ZeroAmount();
@@ -184,7 +184,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
 
         if (totalAmount > contractBalance) revert InsufficientBalance();
 
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i; i < len; ++i) {
             _transfer(address(this), recipients[i], amounts[i]);
         }
 
@@ -243,7 +243,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     }
 
     /// @notice Withdraws ETH from the contract balance
-    /// @dev Callable only by owner, ensures ETH is not locked in the contract; includes reason for transparency
+    /// @dev Callable only by owner, ensures ETH is not locked in the contract using nonReentrant and Checks-Effects-Interactions pattern
     /// @param recipient Address to receive the ETH
     /// @param amount Amount of ETH to withdraw (in wei)
     /// @param reason Reason for the withdrawal (e.g., "Contract maintenance", "Error recovery")
@@ -260,7 +260,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     }
 
     /// @notice Updates the burn and recovery limit (in basis points, e.g., 1000 = 10%)
-    /// @dev Callable only by owner, limit must be between 1% and 50% to prevent supply volatility; emits LimitUpdated event
+    /// @dev Callable only by owner, limit must be between 1% and 50% to prevent supply volatility
     /// @param newLimitBasisPoints New limit in basis points (100 = 1%, 5000 = 50%)
     function updateLimit(uint256 newLimitBasisPoints) external onlyOwner {
         if (newLimitBasisPoints < 100 || newLimitBasisPoints > 5000) revert InvalidLimit();
@@ -269,7 +269,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     }
 
     /// @notice Updates the cooldown period for burn and recovery operations
-    /// @dev Callable only by owner, cooldown must be between 1 hour and 7 days; emits CooldownUpdated event
+    /// @dev Callable only by owner, cooldown must be between 1 hour and 7 days
     /// @param newCooldown New cooldown period in seconds
     function setCooldown(uint256 newCooldown) external onlyOwner {
         if (newCooldown < 1 hours || newCooldown > 7 days) revert InvalidCooldown();
@@ -371,6 +371,7 @@ contract GenyToken is Initializable, ERC20Upgradeable, Ownable2StepUpgradeable, 
     // === Fallback ===
 
     /// @notice Fallback to receive ETH
+    /// @dev Emits EthReceived event when ETH is received
     receive() external payable {
         emit EthReceived(msg.sender, msg.value);
     }
