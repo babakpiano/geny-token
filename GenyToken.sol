@@ -115,7 +115,9 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @param from Address sending the tokens
     /// @param to Address receiving the tokens
     /// @param amount Number of tokens transferred
-    function _update(address from, address to, uint256 amount) internal override(ERC20, ERC20Votes)
+    function _update(address from, address to, uint256 amount)
+        internal
+        override(ERC20, ERC20Votes)
     {
         super._update(from, to, amount);
     }
@@ -124,7 +126,12 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @dev Overrides OpenZeppelin function to resolve ERC20Permit and Nonces inheritance conflict
     /// @param owner Address to retrieve the nonce for
     /// @return The current nonce for the specified owner
-    function nonces(address owner) public view virtual override(ERC20Permit, Nonces) returns (uint256)
+    function nonces(address owner)
+        public
+        view
+        virtual
+        override(ERC20Permit, Nonces)
+        returns (uint256)
     {
         return super.nonces(owner);
     }
