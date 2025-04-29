@@ -43,6 +43,11 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @param amount Total number of tokens minted
     event Initialized(address indexed allocationContract, uint256 amount);
 
+    /// @notice Emitted when token name and symbol are set during deployment
+    /// @param name The token name set
+    /// @param symbol The token symbol set
+    event TokenMetadataSet(string name, string symbol);
+
     /// @notice Emitted when contract metadata URI is updated
     /// @param newURI The new metadata URI set, indexed for efficient off-chain filtering
     event MetadataURIUpdated(string indexed newURI);
@@ -54,7 +59,7 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     event TransferWithVotes(address indexed from, address indexed to, uint256 amount);
 
     /// @notice Deploys the token and allocates the total supply to the specified contract
-    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling.
+    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling. Emits events for state changes (TokenMetadataSet, MetadataURIUpdated, Initialized).
     /// @param allocationContract Address to receive the initial token supply
     /// @param contractURI_ Metadata URI for the token (ERC-7572)
     constructor(
@@ -75,9 +80,12 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         // Cache token name and symbol as strings for ERC20 compatibility
         _tokenNameStr = _bytes32ToString(_TOKEN_NAME);
         _tokenSymbolStr = _bytes32ToString(_TOKEN_SYMBOL);
+        // Emit event for token name and symbol initialization
+        emit TokenMetadataSet(_tokenNameStr, _tokenSymbolStr);
 
-        // Set metadata URI
+        // Set metadata URI and emit event
         _contractURI = contractURI_;
+        emit MetadataURIUpdated(contractURI_);
         // Mint the fixed supply to the allocation contract
         _mint(allocationContract, totalSupply);
 
