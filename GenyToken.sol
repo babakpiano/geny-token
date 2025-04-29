@@ -42,10 +42,6 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @param symbol The token symbol set, indexed for efficient off-chain filtering
     event TokenMetadataSet(string indexed name, string indexed symbol);
 
-    /// @notice Emitted when contract metadata URI is updated
-    /// @param newURI The new metadata URI set, indexed for efficient off-chain filtering
-    event MetadataURIUpdated(string indexed newURI);
-
     /// @notice Emitted for every transfer, including delegate votes change
     /// @param from Address sending the tokens
     /// @param to Address receiving the tokens
@@ -53,7 +49,7 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     event TransferWithVotes(address indexed from, address indexed to, uint256 amount);
 
     /// @notice Deploys the token and allocates the total supply to the specified contract
-    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling. Emits events for state changes (TokenMetadataSet, MetadataURIUpdated, Initialized). Token name and symbol are directly set without intermediate constants for simplicity.
+    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling. Emits events for state changes (TokenMetadataSet, Initialized).
     /// @param allocationContract Address to receive the initial token supply
     /// @param contractURI_ Metadata URI for the token (ERC-7572)
     constructor(
@@ -72,9 +68,8 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         _tokenSymbolStr = "GENY";
         emit TokenMetadataSet(_tokenNameStr, _tokenSymbolStr);
 
-        // Set metadata URI and emit event
+        // Set metadata URI
         _contractURI = contractURI_;
-        emit MetadataURIUpdated(contractURI_);
 
         // Mint the fixed supply to the allocation contract
         uint256 totalSupply = _TOTAL_SUPPLY;
@@ -94,36 +89,16 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         return _TOTAL_SUPPLY;
     }
 
-    /// @notice Returns the token name
-    /// @return The token name as a string ("Genyleap")
-    function tokenName() external view returns (string memory) {
+    /// @inheritdoc ERC20
+    /// @notice Returns the token name as expected by ERC20 interface
+    function name() public view override returns (string memory) {
         return _tokenNameStr;
     }
 
-    /// @notice Returns the token symbol
-    /// @return The token symbol as a string ("GENY")
-    function tokenSymbol() external view returns (string memory) {
+    /// @inheritdoc ERC20
+    /// @notice Returns the token symbol as expected by ERC20 interface
+    function symbol() public view override returns (string memory) {
         return _tokenSymbolStr;
-    }
-
-    /// @dev Converts a bytes32 value to a string for ERC20 compatibility
-    /// @param _bytes The bytes32 value to convert
-    /// @return The converted string
-    function _bytes32ToString(bytes32 _bytes) private pure returns (string memory) {
-        uint256 i;
-        // Iterate until end of bytes32 or null byte is found
-        while (i < 32 && _bytes[i] != 0) {
-            // Increment is safe as i is bounded by 32, removed unchecked for better readability
-            ++i;
-        }
-        // Create a byte array of the appropriate length
-        bytes memory bytesArray = new bytes(i);
-        // Copy bytes to the array
-        for (uint256 j; j < i; ++j) {
-            bytesArray[j] = _bytes[j];
-        }
-        // Convert byte array to string
-        return string(bytesArray);
     }
 
     /// @dev Updates token state for transfers, including vote tracking
