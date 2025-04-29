@@ -6,7 +6,6 @@ pragma solidity 0.8.29;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
-import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 
 /// @title Geny
 /// @author compez.eth
@@ -93,11 +92,11 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         super._update(from, to, amount);
     }
 
-    /// @dev Override for permit nonce handling
+    /// @dev Override for permit nonce handling (from ERC20Permit)
     function nonces(address owner)
         public
         view
-        override(ERC20Permit, Nonces)
+        override(ERC20Permit)
         returns (uint256)
     {
         return super.nonces(owner);
