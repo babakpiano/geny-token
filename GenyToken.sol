@@ -41,6 +41,12 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @param newURI The new metadata URI set
     event MetadataURIUpdated(string newURI);
 
+    /// @notice Emitted for every transfer, including delegate votes change
+    /// @param from Address sending the tokens
+    /// @param to Address receiving the tokens
+    /// @param amount Number of tokens transferred
+    event TransferWithVotes(address indexed from, address indexed to, uint256 amount);
+
     /// @notice Deploys the token and allocates the total supply to the specified contract
     /// @dev Initializes token metadata and mints the fixed supply to the allocation contract
     /// @param allocationContract Address to receive the initial token supply
@@ -124,6 +130,8 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         override(ERC20, ERC20Votes)
     {
         super._update(from, to, amount);
+        // Emit custom transfer event for tracking votes
+        emit TransferWithVotes(from, to, amount);
     }
 
     /// @notice No-op inheritance fix to enable permit and votes functionality with shared nonce behavior
