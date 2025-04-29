@@ -38,6 +38,8 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         require(bytes(contractURI_).length != 0, "URI must be set");
 
         uint256 totalSupply = _TOTAL_SUPPLY; // Cache the total supply in memory
+        string memory tokenName = _TOKEN_NAME; // Cache the token name in memory
+        string memory tokenSymbol = _TOKEN_SYMBOL; // Cache the token symbol in memory
 
         _contractURI = contractURI_;
         _mint(allocationContract, totalSupply); // Use cached totalSupply
