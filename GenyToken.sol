@@ -32,7 +32,8 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     constructor(
         address allocationContract,
         string memory contractURI_
-    ) ERC20(_TOKEN_NAME, _TOKEN_SYMBOL) ERC20Permit(_TOKEN_NAME) {
+    ) payable ERC20(_TOKEN_NAME, _TOKEN_SYMBOL) ERC20Permit(_TOKEN_NAME) {
+        require(msg.value == 0, "Constructor should not receive ETH");
         require(allocationContract != address(0), "Allocation contract cannot be address zero");
         require(bytes(contractURI_).length != 0, "URI needs to be set");
 
