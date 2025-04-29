@@ -11,11 +11,11 @@ import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 /// @title GenyToken
 /// @author compez.eth
 /// @notice An ERC20 token with a fixed supply of 256 million, designed to empower creators and drive innovation in the Genyleap ecosystem.
-/// @dev Extends OpenZeppelin's ERC20 with permit for gasless approvals and votes for decentralized governance. All allocations are handled by an external contract.
+/// @dev Extends OpenZeppelin's ERC20 with permit for gasless approvals and votes for decentralized governance. All allocations are handled by an external contract. Emits standard ERC20 events (Transfer, Approval) and ERC20Votes events (DelegateChanged, DelegateVotesChanged) for key operations; additional events are not defined due to the fixed supply and external allocation.
 /// @custom:security-contact security@genyleap.com
 contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @dev Fixed total token supply (256 million tokens with 18 decimals)
-    uint256 internal constant _TOTAL_SUPPLY = 256_000_000 * 10 ** 18;
+    uint256 internal constant _TOTAL_SUPPLY = 2.56e8 * 1e18;
 
     /// @dev Token name stored as bytes32 for gas-efficient storage
     bytes32 internal constant _TOKEN_NAME = bytes32("Genyleap");
@@ -115,7 +115,9 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @param from Address sending the tokens
     /// @param to Address receiving the tokens
     /// @param amount Number of tokens transferred
-    function _update(address from, address to, uint256 amount) internal override(ERC20, ERC20Votes)
+    function _update(address from, address to, uint256 amount)
+        internal
+        override(ERC20, ERC20Votes)
     {
         super._update(from, to, amount);
     }
@@ -124,7 +126,12 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @dev Overrides OpenZeppelin function to resolve ERC20Permit and Nonces inheritance conflict
     /// @param owner Address to retrieve the nonce for
     /// @return The current nonce for the specified owner
-    function nonces(address owner) public view virtual override(ERC20Permit, Nonces) returns (uint256)
+    function nonces(address owner)
+        public
+        view
+        virtual
+        override(ERC20Permit, Nonces)
+        returns (uint256)
     {
         return super.nonces(owner);
     }
