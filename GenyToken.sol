@@ -6,23 +6,23 @@ pragma solidity 0.8.29;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
+import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 
 /// @title Geny
 /// @author compez.eth
 /// @notice ERC20 token with a total supply of 256 million, designed to empower creators and fuel boundless innovation within the Genyleap ecosystem.
 /// @dev Implements core ERC20 functionality with permit for gasless approvals and votes for decentralized governance. All allocations and sensitive operations are handled by auxiliary contracts.
 /// @custom:security-contact security@genyleap.com
-
 contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @dev Total token supply (256 million tokens with 18 decimals)
     uint256 internal constant _TOTAL_SUPPLY = 256_000_000 * 10 ** 18;
 
-    /// @dev Token name and symbol
+    /// @dev Token name and symbol as bytes32 for gas optimization
     bytes32 internal constant _TOKEN_NAME = bytes32("Genyleap");
     bytes32 internal constant _TOKEN_SYMBOL = bytes32("GENY");
 
     /// @notice Metadata URI (ERC-7572)
-    string private immutable _contractURI;
+    string private _contractURI; // Removed immutable
 
     /// @notice Emitted once upon successful token deployment and allocation
     event Initialized(address indexed allocationContract, uint256 amount);
@@ -67,43 +67,33 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     }
 
     /// @dev Converts bytes32 to string for compatibility with ERC20 interfaces
-    function _bytes32ToString(
-        bytes32 _bytes
-    ) internal pure returns (string memory) {
+    function _bytes32ToString(bytes32 _bytes) internal pure returns (string memory) {
         uint256 i = 0;
         while (i < 32 && _bytes[i] != 0) {
-            i++;
+            ++i; // Optimized increment
         }
         bytes memory bytesArray = new bytes(i);
-        for (uint256 j = 0; j < i; ++j) {
+        for (uint256 j = 0; j < i; ++j) { // Optimized increment
             bytesArray[j] = _bytes[j];
         }
         return string(bytesArray);
     }
 
     /// @dev Hook for vote tracking
-    function _update(
-        address from,
-        address to,
-        uint256 amount
-    ) internal override(ERC20, ERC20Votes) {
+    function _update(address from, address to, uint256 amount)
+        internal
+        override(ERC20, ERC20Votes)
+    {
         super._update(from, to, amount);
     }
 
     /// @dev Override for permit nonce handling
-    function nonces(
-        address owner
-    ) public view override(ERC20Permit) returns (uint256) {
-        return super.nonces(owner);
-    }
-
-    /// @dev Override for EIP-712 domain separator
-    function DOMAIN_SEPARATOR()
+    function nonces(address owner)
         public
         view
-        override(ERC20Permit)
-        returns (bytes32)
+        override(ERC20Permit, Nonces)
+        returns (uint256)
     {
-        return super.DOMAIN_SEPARATOR();
+        return super.nonces(owner);
     }
 }
