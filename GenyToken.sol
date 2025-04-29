@@ -96,7 +96,7 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     function nonces(address owner)
         public
         view
-        override(ERC20Permit)
+        override
         returns (uint256)
     {
         return super.nonces(owner);
