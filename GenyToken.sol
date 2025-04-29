@@ -44,8 +44,8 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     event Initialized(address indexed allocationContract, uint256 amount);
 
     /// @notice Emitted when contract metadata URI is updated
-    /// @param newURI The new metadata URI set
-    event MetadataURIUpdated(string newURI);
+    /// @param newURI The new metadata URI set, indexed for efficient off-chain filtering
+    event MetadataURIUpdated(string indexed newURI);
 
     /// @notice Emitted for every transfer, including delegate votes change
     /// @param from Address sending the tokens
@@ -112,7 +112,7 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @dev Converts a bytes32 value to a string for ERC20 compatibility
     /// @param _bytes The bytes32 value to convert
     /// @return The converted string
-    function _bytes32ToString(bytes32 _bytes) internal pure returns (string memory) {
+    function _bytes32ToString(bytes32 _bytes) private pure returns (string memory) {
         uint256 i;
         // Iterate until end of bytes32 or null byte is found
         while (i < 32 && _bytes[i] != 0) {
@@ -143,7 +143,7 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     }
 
     /// @notice No-op inheritance fix to enable permit and votes functionality with shared nonce behavior
-    /// @dev Overrides OpenZeppelin function to resolve ERC20Permit and Nonces inheritance conflict
+    /// @dev Overrides OpenZeppelin function to resolve ERC20Permit and Nonces inheritance conflict. Visibility set to public to match parent contracts.
     /// @param owner Address to retrieve the nonce for
     /// @return The current nonce for the specified owner
     function nonces(address owner)
