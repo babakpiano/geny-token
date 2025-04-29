@@ -21,8 +21,12 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     bytes32 internal constant _TOKEN_NAME = bytes32("Genyleap");
     bytes32 internal constant _TOKEN_SYMBOL = bytes32("GENY");
 
+    /// @dev Cached token name and symbol as strings for gas optimization
+    string private _tokenNameStr;
+    string private _tokenSymbolStr;
+
     /// @notice Metadata URI (ERC-7572)
-    string private _contractURI; // Removed immutable
+    string private _contractURI;
 
     /// @notice Emitted once upon successful token deployment and allocation
     event Initialized(address indexed allocationContract, uint256 amount);
@@ -33,12 +37,14 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     constructor(
         address allocationContract,
         string memory contractURI_
-    ) payable ERC20(_bytes32ToString(_TOKEN_NAME), _bytes32ToString(_TOKEN_SYMBOL)) ERC20Permit(_bytes32ToString(_TOKEN_NAME)) {
+    ) payable ERC20(_tokenNameStr, _tokenSymbolStr) ERC20Permit(_tokenNameStr) {
         require(msg.value == 0, "ETH not accepted");
         require(allocationContract != address(0), "Zero address not allowed");
         require(bytes(contractURI_).length != 0, "URI must be set");
 
         uint256 totalSupply = _TOTAL_SUPPLY; // Cache the total supply in memory
+        _tokenNameStr = _bytes32ToString(_TOKEN_NAME); // Cache name
+        _tokenSymbolStr = _bytes32ToString(_TOKEN_SYMBOL); // Cache symbol
 
         _contractURI = contractURI_;
         _mint(allocationContract, totalSupply);
@@ -57,23 +63,23 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     }
 
     /// @notice Returns token name
-    function tokenName() external pure returns (string memory) {
-        return _bytes32ToString(_TOKEN_NAME);
+    function tokenName() external view returns (string memory) {
+        return _tokenNameStr;
     }
 
     /// @notice Returns token symbol
-    function tokenSymbol() external pure returns (string memory) {
-        return _bytes32ToString(_TOKEN_SYMBOL);
+    function tokenSymbol() external view returns (string memory) {
+        return _tokenSymbolStr;
     }
 
     /// @dev Converts bytes32 to string for compatibility with ERC20 interfaces
     function _bytes32ToString(bytes32 _bytes) internal pure returns (string memory) {
         uint256 i = 0;
         while (i < 32 && _bytes[i] != 0) {
-            ++i; // Optimized increment
+            unchecked { ++i; } // Optimized increment with unchecked
         }
         bytes memory bytesArray = new bytes(i);
-        for (uint256 j = 0; j < i; ++j) { // Optimized increment
+        for (uint256 j = 0; j < i; ++j) {
             bytesArray[j] = _bytes[j];
         }
         return string(bytesArray);
