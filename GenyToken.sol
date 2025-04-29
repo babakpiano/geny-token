@@ -35,7 +35,7 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     ) payable ERC20(_TOKEN_NAME, _TOKEN_SYMBOL) ERC20Permit(_TOKEN_NAME) {
         require(msg.value == 0, "ETH not accepted");
         require(allocationContract != address(0), "Zero address not allowed");
-        require(bytes(contractURI_).length > 0, "URI must be set");
+        require(bytes(contractURI_).length != 0, "URI must be set");
 
         _contractURI = contractURI_;
         _mint(allocationContract, _TOTAL_SUPPLY);
