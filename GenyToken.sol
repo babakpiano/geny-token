@@ -13,29 +13,29 @@ import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Vo
 /// @dev Implements core ERC20 functionality with permit for gasless approvals and votes for decentralized governance. All allocations and sensitive operations are handled by auxiliary contracts.
 /// @custom:security-contact security@genyleap.com
 contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
-    /// @dev Total token supply (256 million tokens with 18 decimals) — defined as internal constant to avoid auto-generated getter
+    /// @dev Total token supply (256 million tokens with 18 decimals)
     uint256 internal constant _TOTAL_SUPPLY = 256_000_000 * 10 ** 18;
 
-    /// @dev Token name and symbol — internal to avoid getter gas cost
+    /// @dev Token name and symbol
     string internal constant _TOKEN_NAME = "Genyleap";
     string internal constant _TOKEN_SYMBOL = "GENY";
 
-    /// @notice Contract URI for token metadata (ERC-7572)
+    /// @notice Metadata URI (ERC-7572)
     string private immutable _contractURI;
 
-    /// @notice Event emitted when the contract is initialized and the total supply is minted
+    /// @notice Emitted once upon successful token deployment and allocation
     event Initialized(address indexed allocationContract, uint256 amount);
 
-    /// @notice Constructor to deploy the token and mint the total supply to the allocation contract
-    /// @param allocationContract Address to receive the total supply
-    /// @param contractURI_ Contract URI to set for the token
+    /// @notice Token deployment and supply allocation
+    /// @param allocationContract Recipient address of the initial supply
+    /// @param contractURI_ Metadata URI for the token
     constructor(
         address allocationContract,
         string memory contractURI_
     ) payable ERC20(_TOKEN_NAME, _TOKEN_SYMBOL) ERC20Permit(_TOKEN_NAME) {
-        require(msg.value == 0, "Constructor should not receive ETH");
-        require(allocationContract != address(0), "Allocation contract cannot be address zero");
-        require(bytes(contractURI_).length != 0, "URI needs to be set");
+        require(msg.value == 0, "ETH not accepted");
+        require(allocationContract != address(0), "Zero address not allowed");
+        require(bytes(contractURI_).length > 0, "URI must be set");
 
         _contractURI = contractURI_;
         _mint(allocationContract, _TOTAL_SUPPLY);
@@ -43,33 +43,51 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         emit Initialized(allocationContract, _TOTAL_SUPPLY);
     }
 
-    /// @notice Returns the contract URI for token metadata
+    /// @notice Contract metadata URI
     function contractURI() external view returns (string memory) {
         return _contractURI;
     }
 
-    /// @notice Returns the total supply constant
+    /// @notice Returns fixed total supply
     function totalSupplyConstant() external pure returns (uint256) {
         return _TOTAL_SUPPLY;
     }
 
-    /// @notice Returns the token name
+    /// @notice Returns token name
     function tokenName() external pure returns (string memory) {
         return _TOKEN_NAME;
     }
 
-    /// @notice Returns the token symbol
+    /// @notice Returns token symbol
     function tokenSymbol() external pure returns (string memory) {
         return _TOKEN_SYMBOL;
     }
 
-    /// @dev Overrides for ERC20 and ERC20Votes inheritance
-    function _update(address from, address to, uint256 amount) internal override(ERC20, ERC20Votes) {
+    /// @dev Hook for vote tracking
+    function _update(address from, address to, uint256 amount)
+        internal
+        override(ERC20, ERC20Votes)
+    {
         super._update(from, to, amount);
     }
 
-    /// @dev Overrides for ERC20Permit inheritance
-    function nonces(address owner) public view virtual override(ERC20Permit) returns (uint256) {
+    /// @dev Override for permit nonce handling
+    function nonces(address owner)
+        public
+        view
+        override(ERC20Permit)
+        returns (uint256)
+    {
         return super.nonces(owner);
+    }
+
+    /// @dev Override for EIP-712 domain separator
+    function DOMAIN_SEPARATOR()
+        public
+        view
+        override(ERC20Permit)
+        returns (bytes32)
+    {
+        return super.DOMAIN_SEPARATOR();
     }
 }
