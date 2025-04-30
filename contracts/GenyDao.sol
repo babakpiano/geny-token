@@ -16,8 +16,8 @@ import "@openzeppelin/contracts/governance/TimelockController.sol";
 /// @author compez.eth
 /// @notice A simple governance contract for the Genyleap ecosystem, managing Genyleap Improvement Proposals (GIP).
 /// @dev Implements voting with 20% quorum for normal proposals and 50% for sensitive ones, 7-day voting period, and 2-day Timelock.
-///      Proposing requires 256,000 tokens for normal and 2,560,000 for sensitive proposals. Voting requires 256 tokens.
-///      Investor labels (Founder, Core Investor, Community Advocate, Standard Holder) are assigned to proposers for transparency.
+///      Proposing requires 0.1% of circulating supply for normal and 1% for sensitive proposals. Voting requires 256 tokens.
+///      Investor labels (Founder, CoreInvestor, CommunityAdvocate, StandardHolder) are assigned for transparency.
 ///      Minimums and labels can be updated via GIP. Integrates with GenyAllocation and GenyBurnManager.
 /// @custom:security-contact security@genyleap.com
 contract GenyDAO is
@@ -33,8 +33,8 @@ contract GenyDAO is
     TimelockController public timelock; // Timelock for delayed execution
     address public burnManager; // GenyBurnManager for token burning
     address public allocationManager; // GenyAllocation for treasury management
-    uint256 public minProposingPowerNormal; // Minimum tokens to propose normal GIP (256,000 tokens)
-    uint256 public minProposingPowerSensitive; // Minimum tokens to propose sensitive GIP (2,560,000 tokens)
+    uint256 public minProposingPowerNormalPercent; // Percent of circulating supply for normal GIP (0.1%)
+    uint256 public minProposingPowerSensitivePercent; // Percent of circulating supply for sensitive GIP (1%)
     uint256 public minVotingPower; // Minimum tokens to vote (256 tokens)
 
     /// @notice Investor label types for proposers
@@ -55,7 +55,7 @@ contract GenyDAO is
         uint256 againstVotes;
         uint256 totalVotes;
         bool executed;
-        bool isSensitive; // True for sensitive proposals (e.g., large treasury transfers)
+        bool isSensitive; // True for sensitive proposals
         address[] targets; // Contracts to call
         uint256[] values; // ETH values for calls
         bytes[] calldatas; // Call data for execution
@@ -72,8 +72,8 @@ contract GenyDAO is
     uint256 private constant VOTING_PERIOD = 7 days; // 7 days voting period
     uint256 private constant BURN_COOLDOWN = 1 days; // 24-hour cooldown for burns
     uint256 private constant BURN_MAX_PERCENT = 10; // Max 10% of treasury per burn
-    uint256 private constant MIN_PROPOSING_POWER_MIN = 25_600 * 10**18; // Minimum allowed proposing power
-    uint256 private constant MIN_PROPOSING_POWER_MAX = 25_600_000 * 10**18; // Maximum allowed proposing power
+    uint256 private constant MIN_PROPOSING_PERCENT_MIN = 0.01 * 100; // Minimum 0.01% (1 basis point)
+    uint256 private constant MIN_PROPOSING_PERCENT_MAX = 10 * 100; // Maximum 10% (1000 basis points)
     uint256 private constant MIN_VOTING_POWER_MIN = 25 * 10**18; // Minimum allowed voting power
     uint256 private constant MIN_VOTING_POWER_MAX = 2_560 * 10**18; // Maximum allowed voting power
 
@@ -92,8 +92,8 @@ contract GenyDAO is
     event Voted(uint256 indexed proposalId, address voter, bool support, uint256 weight);
     event ProposalExecuted(uint256 indexed proposalId);
     event TokensBurned(uint256 indexed proposalId, uint256 amount);
-    event MinProposingPowerNormalUpdated(uint256 oldPower, uint256 newPower);
-    event MinProposingPowerSensitiveUpdated(uint256 oldPower, uint256 newPower);
+    event MinProposingPowerNormalPercentUpdated(uint256 oldPercent, uint256 newPercent);
+    event MinProposingPowerSensitivePercentUpdated(uint256 oldPercent, uint256 newPercent);
     event MinVotingPowerUpdated(uint256 oldPower, uint256 newPower);
     event InvestorLabelUpdated(address indexed investor, InvestorLabel oldLabel, InvestorLabel newLabel);
 
@@ -131,14 +131,23 @@ contract GenyDAO is
         burnManager = _burnManager;
         allocationManager = _allocationManager;
         timelock = TimelockController(payable(_timelock));
-        minProposingPowerNormal = 256_000 * 10**18; // 0.1% of 256M total supply
-        minProposingPowerSensitive = 2_560_000 * 10**18; // 1% of 256M total supply
+        minProposingPowerNormalPercent = 0.1 * 100; // 0.1% (10 basis points)
+        minProposingPowerSensitivePercent = 1 * 100; // 1% (100 basis points)
         minVotingPower = 256 * 10**18; // 256 tokens
+    }
+
+    /// @notice Returns the minimum proposing power for a proposal
+    /// @param isSensitive True if the proposal is sensitive
+    /// @return The minimum tokens required
+    function getMinProposingPower(bool isSensitive) public view returns (uint256) {
+        uint256 circulatingSupply = token.totalSupply(); // Approximation of circulating supply
+        uint256 percent = isSensitive ? minProposingPowerSensitivePercent : minProposingPowerNormalPercent;
+        return (circulatingSupply * percent) / (100 * 100); // Convert basis points to tokens
     }
 
     /// @notice Creates a new GIP (Genyleap Improvement Proposal)
     /// @param description Proposal description
-    /// @param isSensitive True if the proposal is sensitive (e.g., large treasury transfers or contract changes)
+    /// @param isSensitive True if the proposal is sensitive
     /// @param targets Contract addresses to call
     /// @param values ETH values for each call
     /// @param calldatas Data for each call
@@ -149,7 +158,7 @@ contract GenyDAO is
         uint256[] memory values,
         bytes[] memory calldatas
     ) external whenNotPaused {
-        uint256 requiredPower = isSensitive ? minProposingPowerSensitive : minProposingPowerNormal;
+        uint256 requiredPower = getMinProposingPower(isSensitive);
         require(token.balanceOf(msg.sender) >= requiredPower, "Insufficient proposing power");
         require(targets.length == values.length && values.length == calldatas.length, "Invalid proposal data");
 
@@ -223,22 +232,22 @@ contract GenyDAO is
         emit ProposalExecuted(proposalId);
     }
 
-    /// @notice Updates the minimum proposing power for normal proposals via a GIP
-    /// @param newPower New minimum proposing power
-    function updateMinProposingPowerNormal(uint256 newPower) external onlyGovernance {
-        require(newPower >= MIN_PROPOSING_POWER_MIN && newPower <= MIN_PROPOSING_POWER_MAX, "Invalid proposing power");
-        uint256 oldPower = minProposingPowerNormal;
-        minProposingPowerNormal = newPower;
-        emit MinProposingPowerNormalUpdated(oldPower, newPower);
+    /// @notice Updates the minimum proposing power percentage for normal proposals via a GIP
+    /// @param newPercent New percentage (in basis points)
+    function updateMinProposingPowerNormalPercent(uint256 newPercent) external onlyGovernance {
+        require(newPercent >= MIN_PROPOSING_PERCENT_MIN && newPercent <= MIN_PROPOSING_PERCENT_MAX, "Invalid proposing percent");
+        uint256 oldPercent = minProposingPowerNormalPercent;
+        minProposingPowerNormalPercent = newPercent;
+        emit MinProposingPowerNormalPercentUpdated(oldPercent, newPercent);
     }
 
-    /// @notice Updates the minimum proposing power for sensitive proposals via a GIP
-    /// @param newPower New minimum proposing power
-    function updateMinProposingPowerSensitive(uint256 newPower) external onlyGovernance {
-        require(newPower >= MIN_PROPOSING_POWER_MIN && newPower <= MIN_PROPOSING_POWER_MAX, "Invalid proposing power");
-        uint256 oldPower = minProposingPowerSensitive;
-        minProposingPowerSensitive = newPower;
-        emit MinProposingPowerSensitiveUpdated(oldPower, newPower);
+    /// @notice Updates the minimum proposing power percentage for sensitive proposals via a GIP
+    /// @param newPercent New percentage (in basis points)
+    function updateMinProposingPowerSensitivePercent(uint256 newPercent) external onlyGovernance {
+        require(newPercent >= MIN_PROPOSING_PERCENT_MIN && newPercent <= MIN_PROPOSING_PERCENT_MAX, "Invalid proposing percent");
+        uint256 oldPercent = minProposingPowerSensitivePercent;
+        minProposingPowerSensitivePercent = newPercent;
+        emit MinProposingPowerSensitivePercentUpdated(oldPercent, newPercent);
     }
 
     /// @notice Updates the minimum voting power via a GIP
