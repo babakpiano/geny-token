@@ -14,10 +14,10 @@ import "@openzeppelin/contracts/governance/TimelockController.sol";
 
 /// @title GenyDAO
 /// @author compez.eth
-/// @notice A simple governance contract for the Genyleap ecosystem, managing Genyleap Improvement Proposals (GIP).
+/// @notice Manages Genyleap Improvement Proposals (GIP) for decentralized governance in the Genyleap ecosystem.
 /// @dev Implements voting with 20% quorum for normal proposals and 50% for sensitive ones, 7-day voting period, and 2-day Timelock.
-///      Proposing requires 0.1% of circulating supply for normal and 1% for sensitive proposals. Voting requires 256 tokens.
-///      Investor labels (Founder, CoreInvestor, CommunityAdvocate, StandardHolder) are assigned for transparency.
+///      Proposing requires 0.1% (normal) or 1% (sensitive) of circulating supply; voting requires 256 tokens.
+///      Circulating supply is calculated using GenyAllocation's released tokens. Investor labels enhance transparency.
 ///      Minimums and labels can be updated via GIP. Integrates with GenyAllocation and GenyBurnManager.
 /// @custom:security-contact security@genyleap.com
 contract GenyDAO is
@@ -33,74 +33,62 @@ contract GenyDAO is
     TimelockController public timelock; // Timelock for delayed execution
     address public burnManager; // GenyBurnManager for token burning
     address public allocationManager; // GenyAllocation for treasury management
-    uint256 public minProposingPowerNormalPercent; // Percent of circulating supply for normal GIP (0.1%)
-    uint256 public minProposingPowerSensitivePercent; // Percent of circulating supply for sensitive GIP (1%)
+    uint32 public minProposingPowerNormalPercent; // Basis points (0.1% = 10)
+    uint32 public minProposingPowerSensitivePercent; // Basis points (1% = 100)
     uint256 public minVotingPower; // Minimum tokens to vote (256 tokens)
+    uint256 public lastBurnTimestamp; // Last burn timestamp for cooldown
 
     /// @notice Investor label types for proposers
-    enum InvestorLabel {
-        None, // Default, no label
-        Founder, // Project founders
-        CoreInvestor, // Major long-term investors
-        CommunityAdvocate, // Active community supporters
-        StandardHolder // Standard token holders
-    }
+    enum InvestorLabel { None, Founder, CoreInvestor, CommunityAdvocate, StandardHolder }
 
+    /// @dev Stores proposal details with optimized storage
     struct Proposal {
         address proposer;
         string description;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 forVotes;
-        uint256 againstVotes;
-        uint256 totalVotes;
+        uint48 startTime;
+        uint48 endTime;
+        uint96 forVotes;
+        uint96 againstVotes;
+        uint96 totalVotes;
         bool executed;
-        bool isSensitive; // True for sensitive proposals
-        address[] targets; // Contracts to call
-        uint256[] values; // ETH values for calls
-        bytes[] calldatas; // Call data for execution
+        bool isSensitive;
+        address[] targets;
+        uint256[] values;
+        bytes[] calldatas;
     }
 
-    mapping(uint256 => Proposal) public proposals;
-    mapping(uint256 => mapping(address => bool)) public hasVoted;
-    mapping(address => InvestorLabel) public investorLabels; // Investor labels for proposers
-    uint256 public proposalCount;
+    mapping(uint256 => Proposal) public proposals; // Proposal ID to details
+    mapping(uint256 => mapping(address => bool)) public hasVoted; // Tracks voting status
+    mapping(address => InvestorLabel) public investorLabels; // Investor labels
+    uint256 public proposalCount; // Total number of proposals
 
     // Constants
-    uint256 private constant QUORUM_NORMAL = 20; // 20% quorum for normal proposals
-    uint256 private constant QUORUM_SENSITIVE = 50; // 50% quorum for sensitive proposals
-    uint256 private constant VOTING_PERIOD = 7 days; // 7 days voting period
-    uint256 private constant BURN_COOLDOWN = 1 days; // 24-hour cooldown for burns
-    uint256 private constant BURN_MAX_PERCENT = 10; // Max 10% of treasury per burn
-    uint256 private constant MIN_PROPOSING_PERCENT_MIN = 0.01 * 100; // Minimum 0.01% (1 basis point)
-    uint256 private constant MIN_PROPOSING_PERCENT_MAX = 10 * 100; // Maximum 10% (1000 basis points)
-    uint256 private constant MIN_VOTING_POWER_MIN = 25 * 10**18; // Minimum allowed voting power
-    uint256 private constant MIN_VOTING_POWER_MAX = 2_560 * 10**18; // Maximum allowed voting power
+    uint32 private constant QUORUM_NORMAL = 20_00; // 20% (2000 basis points)
+    uint32 private constant QUORUM_SENSITIVE = 50_00; // 50% (5000 basis points)
+    uint48 private constant VOTING_PERIOD = 7 days;
+    uint48 private constant BURN_COOLDOWN = 1 days;
+    uint32 private constant BURN_MAX_PERCENT = 10_00; // 10% (1000 basis points)
+    uint32 private constant MIN_PROPOSING_PERCENT_MIN = 1; // 0.01% (1 basis point)
+    uint32 private constant MIN_PROPOSING_PERCENT_MAX = 1000; // 10% (1000 basis points)
+    uint256 private constant MIN_VOTING_POWER_MIN = 25 * 1e18;
+    uint256 private constant MIN_VOTING_POWER_MAX = 2560 * 1e18;
 
-    // Last burn timestamp for cooldown
-    uint256 public lastBurnTimestamp;
-
-    event ProposalCreated(
-        uint256 indexed proposalId,
-        address proposer,
-        InvestorLabel proposerLabel,
-        string description,
-        bool isSensitive,
-        uint256 startTime,
-        uint256 endTime
-    );
-    event Voted(uint256 indexed proposalId, address voter, bool support, uint256 weight);
+    /// @notice Emitted when a new GIP is created
+    event ProposalCreated(uint256 indexed proposalId, address proposer, InvestorLabel proposerLabel, string description, bool isSensitive, uint48 startTime);
+    /// @notice Emitted when a vote is cast
+    event Voted(uint256 indexed proposalId, address voter, bool support, uint96 weight);
+    /// @notice Emitted when a proposal is executed
     event ProposalExecuted(uint256 indexed proposalId);
+    /// @notice Emitted when tokens are burned
     event TokensBurned(uint256 indexed proposalId, uint256 amount);
-    event MinProposingPowerNormalPercentUpdated(uint256 oldPercent, uint256 newPercent);
-    event MinProposingPowerSensitivePercentUpdated(uint256 oldPercent, uint256 newPercent);
+    /// @notice Emitted when proposing power percentage is updated
+    event MinProposingPowerPercentUpdated(bool isSensitive, uint32 oldPercent, uint32 newPercent);
+    /// @notice Emitted when minimum voting power is updated
     event MinVotingPowerUpdated(uint256 oldPower, uint256 newPower);
+    /// @notice Emitted when an investor label is updated
     event InvestorLabelUpdated(address indexed investor, InvestorLabel oldLabel, InvestorLabel newLabel);
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
-    }
+    constructor() { _disableInitializers(); }
 
     /// @notice Initializes the DAO contract
     /// @param _token Address of the GENY token contract
@@ -115,11 +103,7 @@ contract GenyDAO is
         address _allocationManager,
         address _timelock
     ) external initializer {
-        require(_token != address(0), "Invalid token address");
-        require(_owner != address(0), "Invalid owner address");
-        require(_burnManager != address(0), "Invalid burn manager address");
-        require(_allocationManager != address(0), "Invalid allocation manager address");
-        require(_timelock != address(0), "Invalid timelock address");
+        _validateAddresses(_token, _owner, _burnManager, _allocationManager, _timelock);
 
         __Ownable2Step_init();
         _transferOwnership(_owner);
@@ -131,21 +115,25 @@ contract GenyDAO is
         burnManager = _burnManager;
         allocationManager = _allocationManager;
         timelock = TimelockController(payable(_timelock));
-        minProposingPowerNormalPercent = 0.1 * 100; // 0.1% (10 basis points)
-        minProposingPowerSensitivePercent = 1 * 100; // 1% (100 basis points)
-        minVotingPower = 256 * 10**18; // 256 tokens
+        minProposingPowerNormalPercent = 10; // 0.1%
+        minProposingPowerSensitivePercent = 100; // 1%
+        minVotingPower = 256 * 1e18;
+    }
+
+    /// @notice Returns the circulating supply using GenyAllocation's released tokens
+    /// @return The circulating supply in tokens
+    function getCirculatingSupply() public view returns (uint256) {
+        return IGenyAllocation(allocationManager).getTotalReleasedTokens();
     }
 
     /// @notice Returns the minimum proposing power for a proposal
     /// @param isSensitive True if the proposal is sensitive
     /// @return The minimum tokens required
     function getMinProposingPower(bool isSensitive) public view returns (uint256) {
-        uint256 circulatingSupply = token.totalSupply(); // Approximation of circulating supply
-        uint256 percent = isSensitive ? minProposingPowerSensitivePercent : minProposingPowerNormalPercent;
-        return (circulatingSupply * percent) / (100 * 100); // Convert basis points to tokens
+        return (getCirculatingSupply() * (isSensitive ? minProposingPowerSensitivePercent : minProposingPowerNormalPercent)) / 1e4;
     }
 
-    /// @notice Creates a new GIP (Genyleap Improvement Proposal)
+    /// @notice Creates a new GIP
     /// @param description Proposal description
     /// @param isSensitive True if the proposal is sensitive
     /// @param targets Contract addresses to call
@@ -158,17 +146,15 @@ contract GenyDAO is
         uint256[] memory values,
         bytes[] memory calldatas
     ) external whenNotPaused {
-        uint256 requiredPower = getMinProposingPower(isSensitive);
-        require(token.balanceOf(msg.sender) >= requiredPower, "Insufficient proposing power");
+        require(token.balanceOf(msg.sender) >= getMinProposingPower(isSensitive), "Insufficient proposing power");
         require(targets.length == values.length && values.length == calldatas.length, "Invalid proposal data");
 
-        proposalCount++;
-        InvestorLabel proposerLabel = investorLabels[msg.sender];
-        proposals[proposalCount] = Proposal({
+        uint48 currentTime = uint48(block.timestamp);
+        proposals[++proposalCount] = Proposal({
             proposer: msg.sender,
             description: description,
-            startTime: block.timestamp,
-            endTime: block.timestamp + VOTING_PERIOD,
+            startTime: currentTime,
+            endTime: currentTime + VOTING_PERIOD,
             forVotes: 0,
             againstVotes: 0,
             totalVotes: 0,
@@ -179,10 +165,10 @@ contract GenyDAO is
             calldatas: calldatas
         });
 
-        emit ProposalCreated(proposalCount, msg.sender, proposerLabel, description, isSensitive, block.timestamp, block.timestamp + VOTING_PERIOD);
+        emit ProposalCreated(proposalCount, msg.sender, investorLabels[msg.sender], description, isSensitive, currentTime);
     }
 
-    /// @notice Votes on a proposal
+    /// @notice Casts a vote on a proposal
     /// @param proposalId The ID of the proposal
     /// @param support True for supporting, false for opposing
     function vote(uint256 proposalId, bool support) external nonReentrant whenNotPaused {
@@ -190,16 +176,13 @@ contract GenyDAO is
         require(block.timestamp >= proposal.startTime && block.timestamp <= proposal.endTime, "Voting not active");
         require(!hasVoted[proposalId][msg.sender], "Already voted");
 
-        uint256 weight = token.balanceOf(msg.sender);
+        uint96 weight = uint96(token.balanceOf(msg.sender));
         require(weight >= minVotingPower, "Insufficient voting power");
 
         hasVoted[proposalId][msg.sender] = true;
         proposal.totalVotes += weight;
-        if (support) {
-            proposal.forVotes += weight;
-        } else {
-            proposal.againstVotes += weight;
-        }
+        if (support) proposal.forVotes += weight;
+        else proposal.againstVotes += weight;
 
         emit Voted(proposalId, msg.sender, support, weight);
     }
@@ -212,78 +195,58 @@ contract GenyDAO is
         require(!proposal.executed, "Already executed");
         require(proposal.forVotes > proposal.againstVotes, "Proposal rejected");
 
-        // Check quorum (20% for normal, 50% for sensitive)
-        uint256 circulatingSupply = token.totalSupply(); // Approximation of circulating supply
-        uint256 quorumPercent = proposal.isSensitive ? QUORUM_SENSITIVE : QUORUM_NORMAL;
-        require(proposal.totalVotes >= (circulatingSupply * quorumPercent) / 100, "Quorum not met");
+        uint32 quorumPercent = proposal.isSensitive ? QUORUM_SENSITIVE : QUORUM_NORMAL;
+        require(proposal.totalVotes >= (getCirculatingSupply() * quorumPercent) / 1e4, "Quorum not met");
 
         proposal.executed = true;
-
-        // Schedule execution via Timelock
-        timelock.scheduleBatch(
-            proposal.targets,
-            proposal.values,
-            proposal.calldatas,
-            bytes32(proposalId),
-            "GenyDAO Proposal Execution",
-            2 days // 2-day Timelock delay
-        );
+        timelock.scheduleBatch(proposal.targets, proposal.values, proposal.calldatas, bytes32(proposalId), "GenyDAO Proposal Execution", 2 days);
 
         emit ProposalExecuted(proposalId);
     }
 
-    /// @notice Updates the minimum proposing power percentage for normal proposals via a GIP
+    /// @notice Updates the minimum proposing power percentage
+    /// @param isSensitive True for sensitive proposals, false for normal
     /// @param newPercent New percentage (in basis points)
-    function updateMinProposingPowerNormalPercent(uint256 newPercent) external onlyGovernance {
+    function updateMinProposingPowerPercent(bool isSensitive, uint32 newPercent) external onlyGovernance {
         require(newPercent >= MIN_PROPOSING_PERCENT_MIN && newPercent <= MIN_PROPOSING_PERCENT_MAX, "Invalid proposing percent");
-        uint256 oldPercent = minProposingPowerNormalPercent;
-        minProposingPowerNormalPercent = newPercent;
-        emit MinProposingPowerNormalPercentUpdated(oldPercent, newPercent);
+        if (isSensitive) {
+            uint32 oldPercent = minProposingPowerSensitivePercent;
+            minProposingPowerSensitivePercent = newPercent;
+            emit MinProposingPowerPercentUpdated(true, oldPercent, newPercent);
+        } else {
+            uint32 oldPercent = minProposingPowerNormalPercent;
+            minProposingPowerNormalPercent = newPercent;
+            emit MinProposingPowerPercentUpdated(false, oldPercent, newPercent);
+        }
     }
 
-    /// @notice Updates the minimum proposing power percentage for sensitive proposals via a GIP
-    /// @param newPercent New percentage (in basis points)
-    function updateMinProposingPowerSensitivePercent(uint256 newPercent) external onlyGovernance {
-        require(newPercent >= MIN_PROPOSING_PERCENT_MIN && newPercent <= MIN_PROPOSING_PERCENT_MAX, "Invalid proposing percent");
-        uint256 oldPercent = minProposingPowerSensitivePercent;
-        minProposingPowerSensitivePercent = newPercent;
-        emit MinProposingPowerSensitivePercentUpdated(oldPercent, newPercent);
-    }
-
-    /// @notice Updates the minimum voting power via a GIP
+    /// @notice Updates the minimum voting power
     /// @param newPower New minimum voting power
     function updateMinVotingPower(uint256 newPower) external onlyGovernance {
         require(newPower >= MIN_VOTING_POWER_MIN && newPower <= MIN_VOTING_POWER_MAX, "Invalid voting power");
-        uint256 oldPower = minVotingPower;
+        emit MinVotingPowerUpdated(minVotingPower, newPower);
         minVotingPower = newPower;
-        emit MinVotingPowerUpdated(oldPower, newPower);
     }
 
-    /// @notice Assigns or updates an investor label
+    /// @notice Assigns or updates an investor label by owner
     /// @param investor Address of the investor
     /// @param label New label to assign
     function setInvestorLabel(address investor, InvestorLabel label) external onlyOwner {
-        require(investor != address(0), "Invalid investor address");
-        InvestorLabel oldLabel = investorLabels[investor];
-        investorLabels[investor] = label;
-        emit InvestorLabelUpdated(investor, oldLabel, label);
+        _updateInvestorLabel(investor, label);
     }
 
-    /// @notice Updates an investor label via a GIP
+    /// @notice Updates an investor label via GIP
     /// @param investor Address of the investor
     /// @param label New label to assign
     function updateInvestorLabel(address investor, InvestorLabel label) external onlyGovernance {
-        require(investor != address(0), "Invalid investor address");
-        InvestorLabel oldLabel = investorLabels[investor];
-        investorLabels[investor] = label;
-        emit InvestorLabelUpdated(investor, oldLabel, label);
+        _updateInvestorLabel(investor, label);
     }
 
     /// @notice Burns tokens from the treasury
     /// @param amount Amount of tokens to burn
     function burnTokens(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
         require(block.timestamp >= lastBurnTimestamp + BURN_COOLDOWN, "Burn cooldown active");
-        require(amount <= (token.balanceOf(address(this)) * BURN_MAX_PERCENT) / 100, "Exceeds max burn limit");
+        require(amount <= (token.balanceOf(address(this)) * BURN_MAX_PERCENT) / 1e4, "Exceeds max burn limit");
 
         lastBurnTimestamp = block.timestamp;
         token.safeApprove(burnManager, amount);
@@ -292,12 +255,12 @@ contract GenyDAO is
         emit TokensBurned(proposalCount, amount);
     }
 
-    /// @notice Pauses the DAO in emergencies
+    /// @notice Pauses the contract
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpauses the DAO
+    /// @notice Unpauses the contract
     function unpause() external onlyOwner {
         _unpause();
     }
@@ -306,7 +269,18 @@ contract GenyDAO is
     /// @param newImplementation Address of the new implementation
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    /// @notice Modifier to restrict functions to governance (via Timelock)
+    /// @dev Validates initialization addresses
+    function _validateAddresses(address _token, address _owner, address _burnManager, address _allocationManager, address _timelock) private pure {
+        require(_token != address(0) && _owner != address(0) && _burnManager != address(0) && _allocationManager != address(0) && _timelock != address(0), "Invalid address");
+    }
+
+    /// @dev Updates investor label with event emission
+    function _updateInvestorLabel(address investor, InvestorLabel label) private {
+        require(investor != address(0), "Invalid investor address");
+        emit InvestorLabelUpdated(investor, investorLabels[investor], label);
+        investorLabels[investor] = label;
+    }
+
     modifier onlyGovernance() {
         require(msg.sender == address(timelock), "Caller is not the timelock");
         _;
@@ -315,4 +289,8 @@ contract GenyDAO is
 
 interface IGenyBurnManager {
     function burnFromContract(uint256 amount) external;
+}
+
+interface IGenyAllocation {
+    function getTotalReleasedTokens() external view returns (uint256);
 }

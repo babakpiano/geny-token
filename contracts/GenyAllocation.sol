@@ -71,7 +71,6 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     /// @notice Initializes the allocation contract
     /// @param _token Address of the GENY token contract
     /// @param _owner Address of the contract owner (e.g., multisig)
-    /// @dev Sets up ownership with Ownable2Step, initializes UUPS, ReentrancyGuard, and Pausable
     function initialize(address _token, address _owner) external initializer {
         require(_token != address(0), "Invalid token");
         require(_owner != address(0), "Invalid owner");
@@ -93,7 +92,6 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     /// @param _cliffSeconds Cliff period in seconds
     /// @param _durationSeconds Total vesting duration in seconds
     /// @param _intervalSeconds Release interval in seconds
-    /// @dev Only callable by the owner. Uses nonReentrant to prevent reentrancy attacks.
     function createAllocation(
         address _beneficiary,
         uint96 _vestedAmount,
@@ -141,7 +139,6 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
 
     /// @notice Releases vested tokens for a specific allocation
     /// @param _allocationId ID of the allocation
-    /// @dev Public function to allow anyone to release vested tokens after the cliff period. Uses nonReentrant.
     function releaseVested(uint256 _allocationId) external nonReentrant whenNotPaused {
         Allocation storage allocation = allocations[_allocationId];
         require(allocation.beneficiary != address(0), "Invalid allocation");
@@ -158,7 +155,6 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     /// @notice Withdraws unlocked tokens for a specific allocation
     /// @param _allocationId ID of the allocation
     /// @param _amount Amount to withdraw
-    /// @dev Only callable by the owner. Uses nonReentrant.
     function withdrawUnlocked(uint256 _allocationId, uint96 _amount) external onlyOwner nonReentrant whenNotPaused payable {
         Allocation storage allocation = allocations[_allocationId];
         require(allocation.beneficiary != address(0), "Invalid allocation");
@@ -173,7 +169,6 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     /// @notice Updates the beneficiary for a specific allocation
     /// @param _allocationId ID of the allocation
     /// @param _newBeneficiary New beneficiary address
-    /// @dev Only callable by the owner
     function updateBeneficiary(uint256 _allocationId, address _newBeneficiary) external onlyOwner payable {
         Allocation storage allocation = allocations[_allocationId];
         require(allocation.beneficiary != address(0), "Invalid allocation");
@@ -220,6 +215,17 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     function getBalance() external view returns (uint256) {
         address thisContract = address(this);
         return token.balanceOf(thisContract);
+    }
+
+    /// @notice Calculates the total released tokens (vested and unlocked) across all allocations
+    /// @return Total released tokens
+    function getTotalReleasedTokens() external view returns (uint256) {
+        uint256 totalReleased = 0;
+        for (uint256 i = 1; i < allocationCount; i++) {
+            Allocation storage allocation = allocations[i];
+            totalReleased += allocation.releasedVestedAmount + allocation.withdrawnUnlockedAmount;
+        }
+        return totalReleased;
     }
 
     /// @notice Pauses the contract
