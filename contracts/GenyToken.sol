@@ -11,12 +11,9 @@ import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 /// @title GenyToken
 /// @author compez.eth
 /// @notice An ERC20 token with a fixed supply of 256 million, designed to empower creators and drive innovation in the Genyleap ecosystem.
-/// @dev Extends OpenZeppelin's ERC20 with permit for gasless approvals and votes for decentralized governance. All allocations are handled by an external contract. Emits standard ERC20 events (Transfer, Approval) and ERC20Votes events (DelegateChanged, DelegateVotesChanged) for key operations; additional events (e.g., for permit) are not defined as standard Approval events suffice for off-chain tracking, given the fixed supply and external allocation. Nonces import is required for ERC20Permit to manage gasless approvals via signatures.
+/// @dev Extends OpenZeppelin's ERC20 with permit for gasless approvals and votes for decentralized governance. All tokens are minted to the contract itself, with allocations handled by external contracts. Emits standard ERC20 events (Transfer, Approval) and ERC20Votes events (DelegateChanged, DelegateVotesChanged) for key operations; additional events (e.g., for permit) are not defined as standard Approval events suffice for off-chain tracking, given the fixed supply and external allocation. Nonces import is required for ERC20Permit to manage gasless approvals via signatures.
 /// @custom:security-contact security@genyleap.com
 contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
-    /// @dev Custom error for zero address validation
-    error ZeroAddressNotAllowed();
-
     /// @dev Custom error for empty URI validation
     error URIMustBeSet();
 
@@ -33,9 +30,9 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     string private _contractURI;
 
     /// @notice Emitted once upon successful token deployment and initial allocation
-    /// @param allocationContract Address receiving the initial token supply
+    /// @param contractAddress Address of this contract where tokens are minted
     /// @param amount Total number of tokens minted
-    event Initialized(address indexed allocationContract, uint256 amount);
+    event Initialized(address indexed contractAddress, uint256 amount);
 
     /// @notice Emitted when token name and symbol are set during deployment
     /// @param name The token name set, indexed for efficient off-chain filtering
@@ -52,20 +49,16 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @param amount Number of tokens transferred
     event TransferWithVotes(address indexed from, address indexed to, uint256 amount);
 
-    /// @notice Deploys the token and allocates the total supply to the specified contract
-    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling. Emits events for state changes (TokenMetadataSet, ContractURISet, Initialized).
-    /// @param allocationContract Address to receive the initial token supply
+    /// @notice Deploys the token and mints the total supply to the contract itself
+    /// @dev Initializes token metadata and mints the fixed supply to this contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling. Emits events for state changes (TokenMetadataSet, ContractURISet, Initialized).
     /// @param contractURI_ Metadata URI for the token (ERC-7572)
-    constructor(
-        address allocationContract,
-        string memory contractURI_
-    ) ERC20("Genyleap", "GENY") ERC20Permit("Genyleap") {
-        if (allocationContract == address(0)) {
-            revert ZeroAddressNotAllowed();
-        }
+    constructor(string memory contractURI_) ERC20("Genyleap", "GENY") ERC20Permit("Genyleap") {
         if (bytes(contractURI_).length == 0) {
             revert URIMustBeSet();
         }
+
+        // Cache address(this) for gas optimization
+        address self = address(this);
 
         // Set token name and symbol (for external view functions)
         _tokenNameStr = "Genyleap";
@@ -76,10 +69,10 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         _contractURI = contractURI_;
         emit ContractURISet(contractURI_);
 
-        // Mint the fixed supply to the allocation contract
+        // Mint the fixed supply to this contract
         uint256 totalSupply = _TOTAL_SUPPLY;
-        _mint(allocationContract, totalSupply);
-        emit Initialized(allocationContract, totalSupply);
+        _mint(self, totalSupply);
+        emit Initialized(self, totalSupply);
     }
 
     /// @notice Returns the contract metadata URI (ERC-7572)
