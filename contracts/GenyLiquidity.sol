@@ -3,13 +3,12 @@
 
 pragma solidity 0.8.30;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title GenyLiquidity
@@ -25,10 +24,10 @@ contract GenyLiquidity is
     PausableUpgradeable,
     UUPSUpgradeable
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
+    using SafeERC20 for IERC20;
     using Math for uint256;
 
-    IERC20Upgradeable public token; // GENY token contract
+    IERC20 public token; // GENY token contract
     address public allocationManager; // GenyAllocation for token supply
     uint256 public constant FREE_LIQUIDITY = 16_000_000 * 1e18; // 16M free tokens
     uint256 public constant VESTED_LIQUIDITY = 16_000_000 * 1e18; // 16M vested tokens
@@ -62,7 +61,9 @@ contract GenyLiquidity is
         address _allocationManager,
         address _owner
     ) external initializer {
-        require(_token != address(0) && _allocationManager != address(0) && _owner != address(0), "Invalid address");
+        require(_token != address(0), "Invalid token address");
+        require(_allocationManager != address(0), "Invalid allocation manager address");
+        require(_owner != address(0), "Invalid owner address");
         require(_allocationManager.code.length > 0, "Allocation manager not a contract");
 
         __Ownable2Step_init();
@@ -71,7 +72,7 @@ contract GenyLiquidity is
         __Pausable_init();
         __UUPSUpgradeable_init();
 
-        token = IERC20Upgradeable(_token);
+        token = IERC20(_token);
         allocationManager = _allocationManager;
         vestingStartTime = uint48(block.timestamp);
     }
@@ -87,20 +88,22 @@ contract GenyLiquidity is
         address pairedToken,
         uint96 pairedAmount
     ) external onlyOwner nonReentrant whenNotPaused {
-        require(poolAddress != address(0) && genyAmount > 0 && pairedAmount > 0, "Invalid parameters");
+        require(poolAddress != address(0), "Invalid pool address");
+        require(genyAmount > 0, "Invalid GENY amount");
         require(pairedToken != address(0), "Invalid paired token");
+        require(pairedAmount > 0, "Invalid paired amount");
         require(poolAddress.code.length > 0, "Pool not a contract");
 
         uint256 totalAvailable = FREE_LIQUIDITY + getReleasableVested();
         require(totalAvailable >= genyAmount, "Insufficient GENY balance");
         require(token.balanceOf(allocationManager) >= genyAmount, "Insufficient GENY in allocation");
         require(token.allowance(allocationManager, address(this)) >= genyAmount, "Insufficient GENY allowance");
-        require(IERC20Upgradeable(pairedToken).balanceOf(owner()) >= pairedAmount, "Insufficient paired token");
-        require(IERC20Upgradeable(pairedToken).allowance(owner(), address(this)) >= pairedAmount, "Insufficient paired token allowance");
+        require(IERC20(pairedToken).balanceOf(owner()) >= pairedAmount, "Insufficient paired token balance");
+        require(IERC20(pairedToken).allowance(owner(), address(this)) >= pairedAmount, "Insufficient paired token allowance");
 
         totalTransferred += genyAmount;
         token.safeTransferFrom(allocationManager, poolAddress, genyAmount);
-        IERC20Upgradeable(pairedToken).safeTransferFrom(owner(), poolAddress, pairedAmount);
+        IERC20(pairedToken).safeTransferFrom(owner(), poolAddress, pairedAmount);
 
         emit LiquidityAdded(poolAddress, genyAmount, pairedToken, pairedAmount);
     }
@@ -123,7 +126,7 @@ contract GenyLiquidity is
     function getReleasableVested() public view returns (uint96 amount) {
         if (block.timestamp < vestingStartTime) return 0;
 
-        uint48 elapsed = uint48(block.timestamp) - vestingStartTime;
+        uint48 elapsed = uint48(block.timestamp - vestingStartTime);
         if (elapsed >= VESTING_DURATION) {
             amount = uint96(VESTED_LIQUIDITY - vestedReleased);
         } else {
@@ -140,7 +143,7 @@ contract GenyLiquidity is
     /// @notice Gets the contract's current GENY token balance
     /// @return balance Current GENY token balance
     function getContractBalance() external view returns (uint256 balance) {
-        return token.balanceOf(address(this));
+        balance = token.balanceOf(address(this));
     }
 
     /// @notice Pauses the contract

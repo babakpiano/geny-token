@@ -4,17 +4,29 @@
 pragma solidity 0.8.30;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
+import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
 import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title GenyToken
 /// @author compez.eth
 /// @notice An ERC20 token with a fixed supply of 256 million, designed to empower creators and drive innovation in the Genyleap ecosystem.
-/// @dev Extends OpenZeppelin's ERC20 with permit for gasless approvals and votes for decentralized governance. All allocations are handled by an external contract. Emits standard ERC20 events (Transfer, Approval) and ERC20Votes events (DelegateChanged, DelegateVotesChanged) for key operations; additional events (e.g., for permit) are not defined as standard Approval events suffice for off-chain tracking, given the fixed supply and external allocation. Nonces import is required for ERC20Permit to manage gasless approvals via signatures.
+/// @dev Extends OpenZeppelin's ERC20 with burnable functionality, permit for gasless approvals, votes for decentralized governance,
+///      ownership for centralized control, and pausability for emergency stops. All allocations are handled by an external contract.
+///      Emits standard ERC20 events (Transfer, Approval) and ERC20Votes events (DelegateChanged, DelegateVotesChanged).
+///      Ownership and pausability add security features. Optimized for gas with payable functions and custom events.
+///      Integrates with GenyGuard for advanced self-custody protection without core dependency.
 /// @custom:security-contact security@genyleap.com
-contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
+interface IGenyGuard {
+    function isRecoveryModeActive(address user) external view returns (bool);
+    function getRecoveryWallet(address user) external view returns (address);
+}
 
+contract GenyToken is ERC20, ERC20Burnable, ERC20Permit, ERC20Votes, ERC20Pausable, Ownable2Step {
     /// @dev Fixed total token supply (256 million tokens with 18 decimals)
     uint256 internal constant _TOTAL_SUPPLY = 2.56e8 * 1e18;
 
@@ -27,25 +39,26 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     /// @dev Metadata URI for the token, compliant with ERC-7572
     string private _contractURI;
 
+    /// @notice Reference to GenyGuard contract for recovery enforcement
+    address public immutable genyGuard;
+
     /// @notice Emitted once upon successful token deployment and initial allocation
-    /// @param allocationContract Address receiving the initial token supply
-    /// @param amount Total number of tokens minted
     event Initialized(address indexed allocationContract, uint256 amount);
 
     /// @notice Emitted when token name and symbol are set during deployment
-    /// @param name The token name set, indexed for efficient off-chain filtering
-    /// @param symbol The token symbol set, indexed for efficient off-chain filtering
     event TokenMetadataSet(string indexed name, string indexed symbol);
 
     /// @notice Emitted when the contract metadata URI is set during deployment
-    /// @param uri The metadata URI set, indexed for efficient off-chain filtering
     event ContractURISet(string indexed uri);
 
     /// @notice Emitted for every transfer, including delegate votes change
-    /// @param from Address sending the tokens
-    /// @param to Address receiving the tokens
-    /// @param amount Number of tokens transferred
     event TransferWithVotes(address indexed from, address indexed to, uint256 amount);
+
+    /// @notice Emitted when the contract is paused
+    event PausedBy(address indexed owner);
+
+    /// @notice Emitted when the contract is unpaused
+    event UnpausedBy(address indexed owner);
 
     /// @dev Custom error for zero address validation
     error ZeroAddressNotAllowed();
@@ -54,33 +67,30 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
     error URIMustBeSet();
 
     /// @notice Deploys the token and allocates the total supply to the specified contract
-    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Not payable to prevent ETH deposits and potential locking, prioritizing security over minor gas savings. Uses custom errors for gas-efficient error handling. Emits events for state changes (TokenMetadataSet, ContractURISet, Initialized).
-    /// @param allocationContract Address to receive the initial token supply
+    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract. Payable to save gas.
+    /// @param allocationContract Address to receive the initial token supply and become the owner
     /// @param contractURI_ Metadata URI for the token (ERC-7572)
+    /// @param genyGuard_ Address of GenyGuard contract
     constructor(
         address allocationContract,
-        string memory contractURI_
-    ) ERC20("Genyleap", "GENY") ERC20Permit("Genyleap") {
-        if (allocationContract == address(0)) {
-            revert ZeroAddressNotAllowed();
-        }
-        if (bytes(contractURI_).length == 0) {
-            revert URIMustBeSet();
-        }
+        string memory contractURI_,
+        address genyGuard_
+    ) ERC20("Genyleap", "GENY") ERC20Permit("Genyleap") Ownable(address(this)) payable {
+        if (allocationContract == address(0)) revert ZeroAddressNotAllowed();
+        if (bytes(contractURI_).length == 0) revert URIMustBeSet();
+        genyGuard = genyGuard_;
+        _transferOwnership(allocationContract);
 
-        // Set token name and symbol (for external view functions)
         _tokenNameStr = "Genyleap";
         _tokenSymbolStr = "GENY";
         emit TokenMetadataSet(_tokenNameStr, _tokenSymbolStr);
 
-        // Set metadata URI and emit event
         _contractURI = contractURI_;
-        emit ContractURISet(contractURI_);
+        emit ContractURISet(_contractURI);
 
-        // Mint the fixed supply to the allocation contract
-        uint256 _totalSupply = _TOTAL_SUPPLY; // Avoids shadowing ERC20._totalSupply
-        _mint(allocationContract, _totalSupply);
-        emit Initialized(allocationContract, _totalSupply);
+        uint256 totalSupply = _TOTAL_SUPPLY;
+        _mint(allocationContract, totalSupply);
+        emit Initialized(allocationContract, totalSupply);
     }
 
     /// @notice Returns the contract metadata URI (ERC-7572)
@@ -107,30 +117,46 @@ contract GenyToken is ERC20, ERC20Permit, ERC20Votes {
         return _tokenSymbolStr;
     }
 
-    /// @dev Updates token state for transfers, including vote tracking
+    /// @dev Updates token state for transfers, including vote tracking, pausability, and recovery guard
     /// @param from Address sending the tokens
     /// @param to Address receiving the tokens
     /// @param amount Number of tokens transferred
     function _update(address from, address to, uint256 amount)
         internal
-        override(ERC20, ERC20Votes)
+        override(ERC20, ERC20Votes, ERC20Pausable)
     {
+        // Enforce recovery: if from is in recovery mode, only allow to recovery wallet
+        if (from != address(0) && from != to && IGenyGuard(genyGuard).isRecoveryModeActive(from)) {
+            require(
+                to == IGenyGuard(genyGuard).getRecoveryWallet(from),
+                "Recovery: only to recovery wallet"
+            );
+        }
         super._update(from, to, amount);
-        // Emit custom transfer event for tracking votes
         emit TransferWithVotes(from, to, amount);
     }
 
+    /// @notice Pauses all token transfers and burns
+    /// @dev Only callable by owner. Payable to save gas.
+    function pause() external onlyOwner payable {
+        _pause();
+        emit PausedBy(msg.sender);
+    }
+
+    /// @notice Unpauses all token transfers and burns
+    /// @dev Only callable by owner. Payable to save gas.
+    function unpause() external onlyOwner payable {
+        _unpause();
+        emit UnpausedBy(msg.sender);
+    }
+
     /// @notice No-op inheritance fix to enable permit and votes functionality with shared nonce behavior
-    /// @dev Overrides OpenZeppelin function to resolve ERC20Permit and Nonces inheritance conflict. Visibility set to public to match parent contracts.
+    /// @dev Overrides OpenZeppelin function to resolve ERC20Permit and Nonces inheritance conflict.
     /// @param owner Address to retrieve the nonce for
     /// @return The current nonce for the specified owner
-    function nonces(address owner)
-        public
-        view
-        virtual
-        override(ERC20Permit, Nonces)
-        returns (uint256)
-    {
+    function nonces(
+        address owner
+    ) public view override(ERC20Permit, Nonces) returns (uint256) {
         return super.nonces(owner);
     }
 }

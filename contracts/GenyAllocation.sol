@@ -6,8 +6,8 @@ pragma solidity 0.8.30;
 import "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -26,6 +26,9 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     IERC20 public token; // GENY token contract
     bool private tokenSet; // Flag to track if token is set
     uint256 public totalReleasedTokens; // Tracks total released tokens (vested + unlocked)
+    address public timelock; // TimelockController for governance upgrades
+    uint256 public constant TOTAL_SUPPLY = 2.56e8 * 1e18; // Fixed total supply
+    uint48 public constant MAX_VESTING_DURATION = 48 * 30 days; // Max 48 months
 
     /// @dev Struct to store allocation details for each beneficiary, optimized for storage packing
     struct Allocation {
@@ -45,6 +48,7 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     mapping(uint256 allocationId => Allocation) public allocations;
     uint256 public allocationCount; // Total number of allocations
     uint256 public totalAllocated; // Total tokens allocated (vested + unlocked)
+    bool public upgradesDisabled; // Flag to disable upgrades after maturity
 
     /// @notice Emitted when a new allocation is created
     event AllocationCreated(
@@ -78,6 +82,12 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     /// @notice Emitted when allowance is set for a spender
     event AllowanceSet(address indexed spender, uint256 amount);
 
+    /// @notice Emitted when the contract is upgraded
+    event Upgraded(address indexed newImplementation);
+
+    /// @notice Emitted when upgrades are disabled
+    event UpgradesDisabled();
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
@@ -86,8 +96,10 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     /// @notice Initializes the allocation contract
     /// @dev The owner must be a multisig contract (e.g., Gnosis Safe) for secure governance.
     /// @param newOwner Address of the contract owner (multisig)
-    function initialize(address newOwner) external initializer {
+    /// @param timelockAddress Address of the TimelockController
+    function initialize(address newOwner, address timelockAddress) external initializer {
         require(newOwner != address(0), "Invalid owner");
+        require(timelockAddress != address(0), "Invalid timelock");
 
         __Ownable2Step_init();
         _transferOwnership(newOwner);
@@ -95,6 +107,7 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         __ReentrancyGuard_init();
         __Pausable_init();
 
+        timelock = timelockAddress;
         allocationCount = 1; // Start from 1 to avoid zero-to-one storage writes
     }
 
@@ -151,10 +164,11 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
             require(durationSeconds > cliffSeconds, "Invalid duration");
             require(intervalSeconds != 0, "Invalid interval");
             require(intervalSeconds < durationSeconds, "Invalid interval");
-            require(durationSeconds < 15 * 365 days, "Duration too long"); // Increased to 15 years
+            require(durationSeconds <= MAX_VESTING_DURATION, "Duration too long"); // Limit to 48 months
         }
 
         address thisContract = address(this);
+        require(totalAllocated + vestedAmount + unlockedAmount <= TOTAL_SUPPLY, "Exceeds total supply");
         require(totalAllocated + vestedAmount + unlockedAmount <= token.balanceOf(thisContract), "Insufficient balance");
 
         Allocation storage allocation = allocations[allocationId];
@@ -262,14 +276,15 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         }
 
         uint48 elapsedTime = uint48(block.timestamp) - allocation.startTime; // Safe for long-term vesting
-        if (elapsedTime >= allocation.durationSeconds) {
+        if (elapsedTime >= allocation.durationSeconds + allocation.cliffSeconds) {
             return allocation.vestedAmount - allocation.releasedVestedAmount;
         }
 
+        uint48 vestingElapsed = elapsedTime - allocation.cliffSeconds;
         // Use Math.mulDiv to avoid precision loss in vesting calculations
         uint256 vestedReleasable = Math.mulDiv(
             allocation.vestedAmount,
-            elapsedTime,
+            vestingElapsed,
             allocation.durationSeconds,
             Math.Rounding.Floor
         );
@@ -307,13 +322,33 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
     }
 
     /// @notice Unpauses the contract
-    /// @dev Only callable by the owner (multisig)
-    function unpause() external onlyOwner {
+    /// @dev Only callable by governance (via timelock)
+    function unpause() external onlyGovernance {
         _unpause();
     }
 
+    /// @notice Disables upgrades permanently after maturity
+    /// @dev Only callable by governance
+    function disableUpgrades() external onlyGovernance {
+        require(!upgradesDisabled, "Upgrades disabled");
+        upgradesDisabled = true;
+        emit UpgradesDisabled();
+    }
+
     /// @notice Authorizes contract upgrades
-    /// @dev Only callable by the owner (multisig)
+    /// @dev Only callable by governance (via timelock)
     /// @param newImplementation Address of the new implementation
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyGovernance {
+        require(!upgradesDisabled, "Upgrades disabled");
+        emit Upgraded(newImplementation);
+    }
+
+    /// @dev Restricts functions to governance (via timelock)
+    modifier onlyGovernance() {
+        require(msg.sender == timelock, "Caller is not governance");
+        _;
+    }
+
+    // Gap for future upgrades to avoid storage collisions
+    uint256[49] private __gap; // 50 slots reserved, minus one used
 }
