@@ -64,7 +64,7 @@ contract GenyGuard {
     error RecoveryKeyNotSet();
     error GracePeriodExpired();
     error RecoveryKeyAlreadyChanged();
-    error InvalidRecoveryKey();
+    error InvalidRecoveryHash();
     error ZeroAddress();
     error NotInRecoveryMode();
 
@@ -102,59 +102,56 @@ contract GenyGuard {
         if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
         if (_hasChangedRecoveryKey[msg.sender]) revert RecoveryKeyAlreadyChanged();
         if (block.timestamp > _recoveryKeySetTime[msg.sender] + RECOVERY_KEY_GRACE_PERIOD) revert GracePeriodExpired();
+
         _recoveryKeyHash[msg.sender] = newHash;
+        _recoveryKeySetTime[msg.sender] = block.timestamp; // 🔧 reset time
         _hasChangedRecoveryKey[msg.sender] = true;
+
         emit RecoveryKeyChanged(msg.sender, newHash, block.timestamp);
     }
 
     /**
-     * @notice Sets or changes the recovery wallet, requires correct recovery key.
+     * @notice Sets or changes the recovery wallet, requires valid recovery hash.
      * @param recoveryWallet The address to set as recovery wallet.
-     * @param recoveryKey The user's recovery key (checked as keccak256(key || salt)).
+     * @param providedHash keccak256(key || salt), computed off-chain
      */
-    function setRecoveryWallet(address recoveryWallet, string calldata recoveryKey) external {
+    function setRecoveryWallet(address recoveryWallet, bytes32 providedHash) external {
         if (recoveryWallet == address(0)) revert ZeroAddress();
         if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        bytes32 salt = _userSalt[msg.sender];
-        if (salt == bytes32(0)) revert SaltNotGenerated();
-        bytes32 checkHash = keccak256(abi.encodePacked(recoveryKey, salt));
-        if (checkHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryKey();
+        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
         _recoveryWallet[msg.sender] = recoveryWallet;
         emit RecoveryWalletSet(msg.sender, recoveryWallet);
     }
 
     /**
-     * @notice Activates recovery mode for the user, requires valid recovery key.
-     * @param recoveryKey The recovery key to authorize activation.
+     * @notice Activates recovery mode for the user, requires valid recovery hash.
+     * @param providedHash keccak256(key || salt), computed off-chain
      */
-    function activateRecoveryMode(string calldata recoveryKey) external {
+    function activateRecoveryMode(bytes32 providedHash) external {
         if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        bytes32 checkHash = keccak256(abi.encodePacked(recoveryKey, _userSalt[msg.sender]));
-        if (checkHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryKey();
+        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
         _recoveryModeActivated[msg.sender] = true;
         emit RecoveryModeActivated(msg.sender);
     }
 
     /**
-     * @notice Deactivates recovery mode, requires valid recovery key.
-     * @param recoveryKey The recovery key to authorize deactivation.
+     * @notice Deactivates recovery mode, requires valid recovery hash.
+     * @param providedHash keccak256(key || salt), computed off-chain
      */
-    function deactivateRecoveryMode(string calldata recoveryKey) external {
+    function deactivateRecoveryMode(bytes32 providedHash) external {
         if (!_recoveryModeActivated[msg.sender]) revert NotInRecoveryMode();
-        bytes32 checkHash = keccak256(abi.encodePacked(recoveryKey, _userSalt[msg.sender]));
-        if (checkHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryKey();
+        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
         _recoveryModeActivated[msg.sender] = false;
         emit RecoveryModeDeactivated(msg.sender);
     }
 
     /**
-     * @notice Marks the user's account as compromised, requires valid recovery key.
-     * @param recoveryKey The recovery key to authorize marking compromised.
+     * @notice Marks the user's account as compromised, requires valid recovery hash.
+     * @param providedHash keccak256(key || salt), computed off-chain
      */
-    function markCompromised(string calldata recoveryKey) external {
+    function markCompromised(bytes32 providedHash) external {
         if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        bytes32 checkHash = keccak256(abi.encodePacked(recoveryKey, _userSalt[msg.sender]));
-        if (checkHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryKey();
+        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
         _isCompromised[msg.sender] = true;
         emit AddressCompromised(msg.sender);
     }
