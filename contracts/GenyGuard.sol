@@ -6,46 +6,36 @@ pragma solidity 0.8.30;
 /**
  * @title GenyGuard
  * @author compez.eth
- * @notice Modular, non-custodial recovery protection for any EVM address with irreversible recovery key and a one-time grace period for correction.
+ * @notice Modular, non-custodial recovery protection for any EVM address using irreversible rotating recovery hashes.
+ * @dev All sensitive actions require hash rotation for replay protection. No sensitive key is ever sent onchain.
  * @custom:security-contact security@genyleap.com
  */
 contract GenyGuard {
-    /// @dev Stores user's recovery wallet address
+    /// @notice Stores recovery wallet address per user
     mapping(address => address) private _recoveryWallet;
 
-    /// @dev Indicates if recovery mode is activated
-    mapping(address => bool) private _recoveryModeActivated;
-
-    /// @dev Flags if user is marked as compromised (analytics)
-    mapping(address => bool) private _isCompromised;
-
-    /// @dev Stores salted hash of recovery key per user
+    /// @notice Stores salted hash of recovery key per user (must rotate after every action)
     mapping(address => bytes32) private _recoveryKeyHash;
 
-    /// @dev Unique salt for each user
+    /// @notice Unique salt for each user (visible, but safe if key is strong)
     mapping(address => bytes32) private _userSalt;
 
-    /// @dev Timestamp when recovery key was first set
+    /// @notice Indicates if recovery mode is active
+    mapping(address => bool) private _recoveryModeActivated;
+
+    /// @notice Flags if user is marked as compromised (for analytics/monitoring)
+    mapping(address => bool) private _isCompromised;
+
+    /// @notice Timestamp when recovery key was set (for optional time-based features)
     mapping(address => uint256) private _recoveryKeySetTime;
-
-    /// @dev Has user changed their recovery key once in grace period?
-    mapping(address => bool) private _hasChangedRecoveryKey;
-
-    /// @notice Grace period (24 hours) for a one-time recovery key correction
-    uint256 public constant RECOVERY_KEY_GRACE_PERIOD = 24 hours;
-
-    // --- Events ---
 
     /// @notice Emitted when a user's salt is generated
     event UserSaltGenerated(address indexed user, bytes32 salt);
 
-    /// @notice Emitted when the recovery key hash is set
-    event RecoveryKeySet(address indexed user, bytes32 hash, bytes32 salt, uint256 timestamp);
+    /// @notice Emitted when recovery key hash is rotated
+    event RecoveryKeyRotated(address indexed user, bytes32 newHash, uint256 timestamp);
 
-    /// @notice Emitted when recovery key is changed in grace period
-    event RecoveryKeyChanged(address indexed user, bytes32 newHash, uint256 timestamp);
-
-    /// @notice Emitted when recovery wallet is set or changed
+    /// @notice Emitted when recovery wallet is set/changed
     event RecoveryWalletSet(address indexed user, address indexed recoveryWallet);
 
     /// @notice Emitted when recovery mode is activated
@@ -54,16 +44,13 @@ contract GenyGuard {
     /// @notice Emitted when recovery mode is deactivated
     event RecoveryModeDeactivated(address indexed user);
 
-    /// @notice Emitted when account is marked as compromised
+    /// @notice Emitted when user is marked as compromised
     event AddressCompromised(address indexed user);
 
     // --- Errors ---
     error SaltAlreadyGenerated();
     error SaltNotGenerated();
-    error RecoveryKeyAlreadySet();
     error RecoveryKeyNotSet();
-    error GracePeriodExpired();
-    error RecoveryKeyAlreadyChanged();
     error InvalidRecoveryHash();
     error ZeroAddress();
     error NotInRecoveryMode();
@@ -72,7 +59,7 @@ contract GenyGuard {
 
     /**
      * @notice Generates and stores a unique salt for the sender. Only once per user.
-     * @dev Should be called before setting a recovery key.
+     * @dev Should be called before setting a recovery key for the first time.
      * @return salt The newly generated salt.
      */
     function generateSalt() external returns (bytes32 salt) {
@@ -83,100 +70,113 @@ contract GenyGuard {
     }
 
     /**
-     * @notice Sets the salted hash of the recovery key (keccak256(key || salt)), one-time with grace period for correction.
-     * @param hash Salted keccak256 hash of recovery key (client: keccak256(key || salt))
+     * @notice Sets or rotates the salted hash of the recovery key.
+     * @dev Use only for initial setup or manual rotation (not as part of sensitive actions).
+     * @param newHash Salted keccak256(key || salt)
      */
-    function setRecoveryKey(bytes32 hash) external {
-        if (_recoveryKeyHash[msg.sender] != bytes32(0)) revert RecoveryKeyAlreadySet();
+    function setRecoveryKey(bytes32 newHash) external {
         if (_userSalt[msg.sender] == bytes32(0)) revert SaltNotGenerated();
-        _recoveryKeyHash[msg.sender] = hash;
-        _recoveryKeySetTime[msg.sender] = block.timestamp;
-        emit RecoveryKeySet(msg.sender, hash, _userSalt[msg.sender], block.timestamp);
-    }
-
-    /**
-     * @notice Allows a one-time correction of recovery key within grace period (24h).
-     * @param newHash The new salted hash of recovery key.
-     */
-    function changeRecoveryKey(bytes32 newHash) external {
-        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        if (_hasChangedRecoveryKey[msg.sender]) revert RecoveryKeyAlreadyChanged();
-        if (block.timestamp > _recoveryKeySetTime[msg.sender] + RECOVERY_KEY_GRACE_PERIOD) revert GracePeriodExpired();
-
         _recoveryKeyHash[msg.sender] = newHash;
-        _recoveryKeySetTime[msg.sender] = block.timestamp; // 🔧 reset time
-        _hasChangedRecoveryKey[msg.sender] = true;
-
-        emit RecoveryKeyChanged(msg.sender, newHash, block.timestamp);
+        _recoveryKeySetTime[msg.sender] = block.timestamp;
+        emit RecoveryKeyRotated(msg.sender, newHash, block.timestamp);
     }
 
     /**
-     * @notice Sets or changes the recovery wallet, requires valid recovery hash.
-     * @param recoveryWallet The address to set as recovery wallet.
-     * @param providedHash keccak256(key || salt), computed off-chain
+     * @notice Sets/changes the recovery wallet with hash rotation.
+     * @param recoveryWallet The new recovery wallet address.
+     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
+     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
      */
-    function setRecoveryWallet(address recoveryWallet, bytes32 providedHash) external {
+    function setRecoveryWallet(address recoveryWallet, bytes32 prevHash, bytes32 newHash) external {
         if (recoveryWallet == address(0)) revert ZeroAddress();
-        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
+        _rotateRecoveryKey(prevHash, newHash);
         _recoveryWallet[msg.sender] = recoveryWallet;
         emit RecoveryWalletSet(msg.sender, recoveryWallet);
     }
 
     /**
-     * @notice Activates recovery mode for the user, requires valid recovery hash.
-     * @param providedHash keccak256(key || salt), computed off-chain
+     * @notice Activates recovery mode with hash rotation.
+     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
+     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
      */
-    function activateRecoveryMode(bytes32 providedHash) external {
-        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
+    function activateRecoveryMode(bytes32 prevHash, bytes32 newHash) external {
+        _rotateRecoveryKey(prevHash, newHash);
         _recoveryModeActivated[msg.sender] = true;
         emit RecoveryModeActivated(msg.sender);
     }
 
     /**
-     * @notice Deactivates recovery mode, requires valid recovery hash.
-     * @param providedHash keccak256(key || salt), computed off-chain
+     * @notice Deactivates recovery mode with hash rotation.
+     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
+     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
      */
-    function deactivateRecoveryMode(bytes32 providedHash) external {
+    function deactivateRecoveryMode(bytes32 prevHash, bytes32 newHash) external {
         if (!_recoveryModeActivated[msg.sender]) revert NotInRecoveryMode();
-        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
+        _rotateRecoveryKey(prevHash, newHash);
         _recoveryModeActivated[msg.sender] = false;
         emit RecoveryModeDeactivated(msg.sender);
     }
 
     /**
-     * @notice Marks the user's account as compromised, requires valid recovery hash.
-     * @param providedHash keccak256(key || salt), computed off-chain
+     * @notice Marks the user's account as compromised with hash rotation.
+     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
+     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
      */
-    function markCompromised(bytes32 providedHash) external {
-        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        if (providedHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
+    function markCompromised(bytes32 prevHash, bytes32 newHash) external {
+        _rotateRecoveryKey(prevHash, newHash);
         _isCompromised[msg.sender] = true;
         emit AddressCompromised(msg.sender);
     }
 
+    /**
+     * @dev Internal hash rotation mechanism, reusable for all sensitive actions.
+     *      Ensures hash is one-time use; must be replaced each time.
+     * @param prevHash The previous hash for validation.
+     * @param newHash The next hash to rotate in.
+     */
+    function _rotateRecoveryKey(bytes32 prevHash, bytes32 newHash) internal {
+        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
+        if (prevHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
+        require(newHash != bytes32(0) && newHash != prevHash, "Invalid new hash");
+        _recoveryKeyHash[msg.sender] = newHash;
+        _recoveryKeySetTime[msg.sender] = block.timestamp;
+        emit RecoveryKeyRotated(msg.sender, newHash, block.timestamp);
+    }
+
     // --- Getters ---
 
+    /**
+     * @notice Returns the current recovery wallet for a user.
+     */
     function getRecoveryWallet(address user) external view returns (address) {
         return _recoveryWallet[user];
     }
 
+    /**
+     * @notice Returns the salt for a user (used off-chain for hash generation).
+     */
     function getUserSalt(address user) external view returns (bytes32) {
         return _userSalt[user];
     }
 
-    function isInGracePeriod(address user) external view returns (bool) {
-        if (_recoveryKeySetTime[user] == 0) return false;
-        return block.timestamp <= _recoveryKeySetTime[user] + RECOVERY_KEY_GRACE_PERIOD &&
-               !_hasChangedRecoveryKey[user];
-    }
-
+    /**
+     * @notice Returns whether recovery mode is active for a user.
+     */
     function isRecoveryModeActive(address user) external view returns (bool) {
         return _recoveryModeActivated[user];
     }
 
+    /**
+     * @notice Returns whether a user is marked as compromised.
+     */
     function isCompromised(address user) external view returns (bool) {
         return _isCompromised[user];
+    }
+
+    /**
+     * @notice Returns the last time a recovery key was rotated.
+     */
+    function getRecoveryKeySetTime(address user) external view returns (uint256) {
+        return _recoveryKeySetTime[user];
     }
 }
