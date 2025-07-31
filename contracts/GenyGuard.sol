@@ -6,177 +6,181 @@ pragma solidity 0.8.30;
 /**
  * @title GenyGuard
  * @author compez.eth
- * @notice Modular, non-custodial recovery protection for any EVM address using irreversible rotating recovery hashes.
- * @dev All sensitive actions require hash rotation for replay protection. No sensitive key is ever sent onchain.
+ * @notice Modular, non-custodial, one-time code recovery protection for any EVM address. All sensitive actions require single-use, rotating recovery codes. No plaintext code is ever stored on-chain.
+ * @dev Recovery codes are always 28-character alphanumeric (A-Z, 0-9), case-insensitive. Each sensitive operation requires the current code and a new code for rotation (hash of new code). This guarantees replay protection and robust off-chain security. Only the code hash is stored.
  * @custom:security-contact security@genyleap.com
  */
 contract GenyGuard {
-    /// @notice Stores recovery wallet address per user
+    /// @dev Maps each user to their registered recovery wallet
     mapping(address => address) private _recoveryWallet;
-
-    /// @notice Stores salted hash of recovery key per user (must rotate after every action)
+    /// @dev Indicates if recovery mode is currently active
+    mapping(address => bool) private _recoveryModeActivated;
+    /// @dev True if user has marked their account as compromised
+    mapping(address => bool) private _isCompromised;
+    /// @dev Stores the latest recovery code hash (rotated after every operation)
     mapping(address => bytes32) private _recoveryKeyHash;
 
-    /// @notice Unique salt for each user (visible, but safe if key is strong)
-    mapping(address => bytes32) private _userSalt;
-
-    /// @notice Indicates if recovery mode is active
-    mapping(address => bool) private _recoveryModeActivated;
-
-    /// @notice Flags if user is marked as compromised (for analytics/monitoring)
-    mapping(address => bool) private _isCompromised;
-
-    /// @notice Timestamp when recovery key was set (for optional time-based features)
-    mapping(address => uint256) private _recoveryKeySetTime;
-
-    /// @notice Emitted when a user's salt is generated
-    event UserSaltGenerated(address indexed user, bytes32 salt);
-
-    /// @notice Emitted when recovery key hash is rotated
-    event RecoveryKeyRotated(address indexed user, bytes32 newHash, uint256 timestamp);
-
-    /// @notice Emitted when recovery wallet is set/changed
+    // --- Events ---
     event RecoveryWalletSet(address indexed user, address indexed recoveryWallet);
-
-    /// @notice Emitted when recovery mode is activated
     event RecoveryModeActivated(address indexed user);
-
-    /// @notice Emitted when recovery mode is deactivated
     event RecoveryModeDeactivated(address indexed user);
-
-    /// @notice Emitted when user is marked as compromised
-    event AddressCompromised(address indexed user);
+    event AddressCompromised(address indexed compromisedWallet);
+    event RecoveryKeyRotated(address indexed user, bytes32 indexed newRecoveryKeyHash);
 
     // --- Errors ---
-    error SaltAlreadyGenerated();
-    error SaltNotGenerated();
+    error InvalidCode();
+    error InvalidCodeFormat();
+    error RecoveryWalletAlreadySet();
+    error RecoveryKeyAlreadySet();
     error RecoveryKeyNotSet();
-    error InvalidRecoveryHash();
-    error ZeroAddress();
+    error Unauthorized();
     error NotInRecoveryMode();
 
-    // --- Core Logic ---
+    // ====== USER FLOW ======
 
     /**
-     * @notice Generates and stores a unique salt for the sender. Only once per user.
-     * @dev Should be called before setting a recovery key for the first time.
-     * @return salt The newly generated salt.
+     * @notice Setup the initial recovery key (irreversible, can only be set once).
+     * @param recoveryKeyHash keccak256 hash of a 28-character alphanumeric code (case-insensitive).
      */
-    function generateSalt() external returns (bytes32 salt) {
-        if (_userSalt[msg.sender] != bytes32(0)) revert SaltAlreadyGenerated();
-        salt = keccak256(abi.encodePacked(msg.sender, block.timestamp, block.prevrandao));
-        _userSalt[msg.sender] = salt;
-        emit UserSaltGenerated(msg.sender, salt);
+    function setRecoveryKey(bytes32 recoveryKeyHash) external {
+        if (_recoveryKeyHash[msg.sender] != bytes32(0)) revert RecoveryKeyAlreadySet();
+        _recoveryKeyHash[msg.sender] = recoveryKeyHash;
+        emit RecoveryKeyRotated(msg.sender, recoveryKeyHash);
     }
 
     /**
-     * @notice Sets or rotates the salted hash of the recovery key.
-     * @dev Use only for initial setup or manual rotation (not as part of sensitive actions).
-     * @param newHash Salted keccak256(key || salt)
+     * @notice Register the recovery wallet. Requires current code and rotates to a new code.
+     * @param wallet The address of the new recovery wallet.
+     * @param code The current recovery code (plain text, 28 alphanumeric).
+     * @param newRecoveryKeyHash keccak256 hash of the next code (28 alphanumeric, case-insensitive).
      */
-    function setRecoveryKey(bytes32 newHash) external {
-        if (_userSalt[msg.sender] == bytes32(0)) revert SaltNotGenerated();
-        _recoveryKeyHash[msg.sender] = newHash;
-        _recoveryKeySetTime[msg.sender] = block.timestamp;
-        emit RecoveryKeyRotated(msg.sender, newHash, block.timestamp);
+    function setRecoveryWallet(address wallet, string calldata code, bytes32 newRecoveryKeyHash) external {
+        if (wallet == address(0)) revert InvalidCode();
+        if (_recoveryWallet[msg.sender] != address(0)) revert RecoveryWalletAlreadySet();
+        _rotateRecoveryKey(code, newRecoveryKeyHash);
+        _recoveryWallet[msg.sender] = wallet;
+        emit RecoveryWalletSet(msg.sender, wallet);
     }
 
     /**
-     * @notice Sets/changes the recovery wallet with hash rotation.
-     * @param recoveryWallet The new recovery wallet address.
-     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
-     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
+     * @notice Activate recovery mode. Requires current code and rotates to a new code.
+     * @param code The current recovery code (plain text).
+     * @param newRecoveryKeyHash keccak256 hash of the next code (28 alphanumeric, case-insensitive).
      */
-    function setRecoveryWallet(address recoveryWallet, bytes32 prevHash, bytes32 newHash) external {
-        if (recoveryWallet == address(0)) revert ZeroAddress();
-        _rotateRecoveryKey(prevHash, newHash);
-        _recoveryWallet[msg.sender] = recoveryWallet;
-        emit RecoveryWalletSet(msg.sender, recoveryWallet);
-    }
-
-    /**
-     * @notice Activates recovery mode with hash rotation.
-     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
-     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
-     */
-    function activateRecoveryMode(bytes32 prevHash, bytes32 newHash) external {
-        _rotateRecoveryKey(prevHash, newHash);
+    function activateRecoveryMode(string calldata code, bytes32 newRecoveryKeyHash) external {
+        if (_recoveryWallet[msg.sender] == address(0)) revert InvalidCode();
+        if (_recoveryModeActivated[msg.sender]) revert RecoveryWalletAlreadySet();
+        _rotateRecoveryKey(code, newRecoveryKeyHash);
         _recoveryModeActivated[msg.sender] = true;
-        emit RecoveryModeActivated(msg.sender);
-    }
-
-    /**
-     * @notice Deactivates recovery mode with hash rotation.
-     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
-     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
-     */
-    function deactivateRecoveryMode(bytes32 prevHash, bytes32 newHash) external {
-        if (!_recoveryModeActivated[msg.sender]) revert NotInRecoveryMode();
-        _rotateRecoveryKey(prevHash, newHash);
-        _recoveryModeActivated[msg.sender] = false;
-        emit RecoveryModeDeactivated(msg.sender);
-    }
-
-    /**
-     * @notice Marks the user's account as compromised with hash rotation.
-     * @param prevHash The previous hash (keccak256(key || salt)), proof of authorization.
-     * @param newHash The next salted hash to rotate in (keccak256(nextKey || salt)).
-     */
-    function markCompromised(bytes32 prevHash, bytes32 newHash) external {
-        _rotateRecoveryKey(prevHash, newHash);
         _isCompromised[msg.sender] = true;
+        emit RecoveryModeActivated(msg.sender);
         emit AddressCompromised(msg.sender);
     }
 
     /**
-     * @dev Internal hash rotation mechanism, reusable for all sensitive actions.
-     *      Ensures hash is one-time use; must be replaced each time.
-     * @param prevHash The previous hash for validation.
-     * @param newHash The next hash to rotate in.
+     * @notice Change recovery wallet. Requires current code and rotates to a new code.
+     * @param newWallet The new recovery wallet address.
+     * @param code The current recovery code (plain text).
+     * @param newRecoveryKeyHash keccak256 hash of the next code (28 alphanumeric, case-insensitive).
      */
-    function _rotateRecoveryKey(bytes32 prevHash, bytes32 newHash) internal {
-        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
-        if (prevHash != _recoveryKeyHash[msg.sender]) revert InvalidRecoveryHash();
-        require(newHash != bytes32(0) && newHash != prevHash, "Invalid new hash");
-        _recoveryKeyHash[msg.sender] = newHash;
-        _recoveryKeySetTime[msg.sender] = block.timestamp;
-        emit RecoveryKeyRotated(msg.sender, newHash, block.timestamp);
+    function changeRecoveryWallet(address newWallet, string calldata code, bytes32 newRecoveryKeyHash) external {
+        if (newWallet == address(0)) revert InvalidCode();
+        _rotateRecoveryKey(code, newRecoveryKeyHash);
+        _recoveryWallet[msg.sender] = newWallet;
+        emit RecoveryWalletSet(msg.sender, newWallet);
     }
 
-    // --- Getters ---
+    /**
+     * @notice Deactivate recovery mode. Requires current code and rotates to a new code.
+     * @param code The current recovery code (plain text).
+     * @param newRecoveryKeyHash keccak256 hash of the next code (28 alphanumeric, case-insensitive).
+     */
+    function deactivateRecoveryMode(string calldata code, bytes32 newRecoveryKeyHash) external {
+        if (!_recoveryModeActivated[msg.sender]) revert NotInRecoveryMode();
+        _rotateRecoveryKey(code, newRecoveryKeyHash);
+        _recoveryModeActivated[msg.sender] = false;
+        emit RecoveryModeDeactivated(msg.sender);
+    }
+
+    // ====== Internal Logic ======
 
     /**
-     * @notice Returns the current recovery wallet for a user.
+     * @dev Internal function for code validation and hash rotation. Enforces 28-char alphanumeric codes.
+     * @param code The current (old) code, plain text.
+     * @param newRecoveryKeyHash Hash of the next code.
      */
+    function _rotateRecoveryKey(string calldata code, bytes32 newRecoveryKeyHash) internal {
+        if (_recoveryKeyHash[msg.sender] == bytes32(0)) revert RecoveryKeyNotSet();
+        if (!_isValidRecoveryCode(code)) revert InvalidCodeFormat();
+        if (keccak256(abi.encodePacked(_normalizeCode(code))) != _recoveryKeyHash[msg.sender]) revert InvalidCode();
+        if (newRecoveryKeyHash == bytes32(0) || newRecoveryKeyHash == _recoveryKeyHash[msg.sender]) revert InvalidCode();
+        _recoveryKeyHash[msg.sender] = newRecoveryKeyHash;
+        emit RecoveryKeyRotated(msg.sender, newRecoveryKeyHash);
+    }
+
+    /**
+     * @dev Validate recovery code length and character set (A-Z, 0-9), 28 chars exactly, hyphens allowed for grouping.
+     *      All hyphens will be ignored for hashing/comparison.
+     */
+    function _isValidRecoveryCode(string calldata code) internal pure returns (bool) {
+        bytes calldata b = bytes(code);
+        uint256 len = 0;
+        for (uint256 i = 0; i < b.length; ++i) {
+            bytes1 c = b[i];
+            if (c == "-") continue;
+            if (
+                !( (c >= "A" && c <= "Z") ||
+                   (c >= "a" && c <= "z") ||
+                   (c >= "0" && c <= "9")
+                 )
+            ) {
+                return false;
+            }
+            len++;
+        }
+        return len == 28;
+    }
+
+    /**
+     * @dev Normalize code: uppercase and remove hyphens. So codes like abcd-1234-xyzz... are always hashed as ABCD1234XYZZ...
+     */
+    function _normalizeCode(string calldata code) internal pure returns (string memory) {
+        bytes calldata b = bytes(code);
+        bytes memory normalized = new bytes(28);
+        uint256 n = 0;
+        for (uint256 i = 0; i < b.length; ++i) {
+            bytes1 c = b[i];
+            if (c == "-") continue;
+            // convert lowercase to uppercase (A-Z)
+            if (c >= "a" && c <= "z") {
+                normalized[n++] = bytes1(uint8(c) - 32);
+            } else {
+                normalized[n++] = c;
+            }
+            if (n == 28) break;
+        }
+        return string(normalized);
+    }
+
+    // ====== VIEW FUNCTIONS ======
+
+    /// @notice Get registered recovery wallet for a user
     function getRecoveryWallet(address user) external view returns (address) {
         return _recoveryWallet[user];
     }
 
-    /**
-     * @notice Returns the salt for a user (used off-chain for hash generation).
-     */
-    function getUserSalt(address user) external view returns (bytes32) {
-        return _userSalt[user];
-    }
-
-    /**
-     * @notice Returns whether recovery mode is active for a user.
-     */
+    /// @notice Is user in recovery mode?
     function isRecoveryModeActive(address user) external view returns (bool) {
         return _recoveryModeActivated[user];
     }
 
-    /**
-     * @notice Returns whether a user is marked as compromised.
-     */
+    /// @notice Has user marked address as compromised?
     function isCompromised(address user) external view returns (bool) {
         return _isCompromised[user];
     }
 
-    /**
-     * @notice Returns the last time a recovery key was rotated.
-     */
-    function getRecoveryKeySetTime(address user) external view returns (uint256) {
-        return _recoveryKeySetTime[user];
+    /// @notice Get recovery key hash (for dApps, only returns hash)
+    function getRecoveryKeyHash(address user) external view returns (bytes32) {
+        return _recoveryKeyHash[user];
     }
 }
