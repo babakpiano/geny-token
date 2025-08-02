@@ -39,16 +39,16 @@ contract GenyTreasury is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable
     }
 
     /// @notice Initializes the treasury contract
-    /// @dev Must be called by the proxy admin or a trusted deployer to prevent front-running. The owner must be a multisig contract (e.g., Gnosis Safe).
+    /// @dev Restricted to the proxy admin to prevent unauthorized initialization. The owner must be a multisig contract (e.g., Gnosis Safe).
     /// @param _token Address of the GENY token contract
     /// @param _allocation Address of the GenyAllocation contract
     /// @param _buybackPool Address to hold bought-back tokens
     /// @param _owner Address of the contract owner (multisig)
-    function initialize(address _token, address _allocation, address _buybackPool, address _owner) external initializer {
-        require(_token != address(0), "Invalid token");
-        require(_allocation != address(0), "Invalid allocation");
-        require(_buybackPool != address(0), "Invalid buyback pool");
-        require(_owner != address(0), "Invalid owner");
+    function initialize(address _token, address _allocation, address _buybackPool, address _owner) external initializer onlyProxyAdmin {
+        require(_token != address(0), "Invalid token address");
+        require(_allocation != address(0), "Invalid allocation address");
+        require(_buybackPool != address(0), "Invalid buyback pool address");
+        require(_owner != address(0), "Invalid owner address");
         __Ownable2Step_init();
         _transferOwnership(_owner);
         __UUPSUpgradeable_init();
@@ -59,7 +59,7 @@ contract GenyTreasury is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable
         buybackPool = _buybackPool;
     }
 
-    /// Thin proxy pattern is used to restrict initializer calls to the proxy admin
+    /// @dev Restricts function calls to the proxy admin
     modifier onlyProxyAdmin() {
         require(msg.sender == _getAdmin(), "Caller is not proxy admin");
         _;
