@@ -27,6 +27,7 @@ interface IGenyGuard {
 /// @author compez.eth
 /// @notice Allows users to stake GENY tokens and earn annual rewards (6-10%) in the Genyleap ecosystem
 /// @dev Uses OpenZeppelin upgradeable contracts with SafeERC20. If GenyGuard is set and recovery mode is active, rewards are sent to the recovery wallet.
+/// Unstaking and reward claiming are allowed even when the contract is paused to prevent locking user funds.
 /// @custom:security-contact security@genyleap.com
 contract GenyStaking is
     Initializable,
@@ -135,8 +136,9 @@ contract GenyStaking is
     }
 
     /// @notice Unstakes tokens for the caller
+    /// @dev Allows unstaking even when the contract is paused to prevent locking user funds
     /// @param _amount Amount of tokens to unstake
-    function unstake(uint96 _amount) external nonReentrant whenNotPaused {
+    function unstake(uint96 _amount) external nonReentrant {
         require(_amount > 0, "Zero amount");
         require(stakes[msg.sender].amount >= _amount, "Not enough staked");
         _updateRewards(msg.sender);
@@ -147,8 +149,9 @@ contract GenyStaking is
     }
 
     /// @notice Claims accumulated rewards for the caller
+    /// @dev Allows claiming rewards even when the contract is paused to prevent locking user funds
     /// @return reward Amount of rewards claimed
-    function claimRewards() external nonReentrant whenNotPaused returns (uint96 reward) {
+    function claimRewards() external nonReentrant returns (uint96 reward) {
         _updateRewards(msg.sender);
         reward = stakes[msg.sender].rewardDebt;
         require(reward > 0, "No rewards");
@@ -211,6 +214,7 @@ contract GenyStaking is
     }
 
     /// @notice Pauses the contract
+    /// @dev Only affects staking and owner-specific functions; unstaking and reward claiming remain available
     function pause() external onlyOwner {
         _pause();
     }
