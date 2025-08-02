@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Genyleap
-
 pragma solidity 0.8.30;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
@@ -13,9 +12,9 @@ import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title GenyTipping
 /// @author compez.eth
-/// @notice Manages tipping campaigns for GENY tokens with labeled multipliers.
+/// @notice Manages tipping campaigns for GENY tokens with labeled multipliers
 /// @dev Supports tipping with labels (e.g., Supporter, Champion) and multipliers, integrated with GenyAirdrop for quotas.
-///      Uses nonReentrant, Pausable, and UUPS upgradeability with Ownable2Step for security.
+/// Uses nonReentrant, Pausable, and UUPS upgradeability with Ownable2Step for security.
 /// @custom:security-contact security@genyleap.com
 contract GenyTipping is
     Initializable,
@@ -26,17 +25,20 @@ contract GenyTipping is
 {
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
-    IERC20Upgradeable public token; // GENY token contract
-    address public airdropContract; // GenyAirdrop contract
-    uint96 public minHolding; // Minimum GENY holding for tipping
+    /// @notice The GENY token contract
+    IERC20Upgradeable public token;
+    /// @notice Address of the GenyAirdrop contract
+    address public airdropContract;
+    /// @notice Minimum GENY holding required for tipping
+    uint96 public minHolding;
 
-    /// @dev Stores label details
+    /// @dev Structure to store label details
     struct Label {
         uint32 multiplier; // Multiplier for tipping quota
         bool active; // Label status
     }
 
-    /// @dev Stores recipient details
+    /// @dev Structure to store recipient details
     struct Recipient {
         string labelName; // Assigned label
         uint96 dailyQuota; // Daily tipping quota
@@ -45,25 +47,28 @@ contract GenyTipping is
         bool isActive; // Recipient status
     }
 
-    /// @dev Stores tip details
+    /// @dev Structure to store tip details
     struct Tip {
-        address sender;
-        address recipient;
-        uint96 amount;
-        uint32 seasonId;
-        uint48 timestamp;
-        string labelName;
+        address sender; // Address of the tip sender
+        address recipient; // Address of the tip recipient
+        uint96 amount; // Amount of tokens tipped
+        uint32 seasonId; // Season ID for the tip
+        uint48 timestamp; // Timestamp of the tip
+        string labelName; // Label associated with the tip
     }
 
-    mapping(string => Label) public labels; // Label name to details
-    mapping(address => Recipient) public recipients; // User to recipient details
-    Tip[] public tips; // Array of all tips
+    /// @notice Mapping of label names to their details
+    mapping(string => Label) public labels;
+    /// @notice Mapping of user addresses to their recipient details
+    mapping(address => Recipient) public recipients;
+    /// @notice Array of all tips
+    Tip[] public tips;
 
     /// @notice Emitted when a tip is submitted
     event TipSubmitted(address indexed sender, address indexed recipient, uint32 indexed seasonId, uint96 amount, string label);
     /// @notice Emitted when a recipient's label is updated
     event RecipientLabelUpdated(address indexed user, string labelName);
-    /// @notice Emitted when minimum holding is updated
+    /// @notice Emitted when the minimum holding is updated
     event MinHoldingUpdated(uint96 newMinHolding);
     /// @notice Emitted when a label is updated
     event LabelUpdated(string indexed name, uint32 multiplier, bool active);
@@ -85,17 +90,14 @@ contract GenyTipping is
         address _owner
     ) external initializer {
         require(_token != address(0) && _airdropContract != address(0) && _owner != address(0), "Invalid address");
-
         __Ownable2Step_init();
         _transferOwnership(_owner);
         __ReentrancyGuard_init();
         __Pausable_init();
         __UUPSUpgradeable_init();
-
         token = IERC20Upgradeable(_token);
         airdropContract = _airdropContract;
         minHolding = 500 * 1e18; // 500 GENY
-
         // Initialize labels
         labels["Supporter"] = Label(2, true);
         labels["Contributor"] = Label(8, true);
@@ -107,7 +109,7 @@ contract GenyTipping is
     }
 
     /// @notice Updates the minimum holding for tipping
-    /// @param _newMinHolding New minimum holding
+    /// @param _newMinHolding New minimum holding amount
     function updateMinHolding(uint96 _newMinHolding) external onlyOwner {
         require(_newMinHolding > 0, "Invalid min holding");
         minHolding = _newMinHolding;
@@ -131,7 +133,6 @@ contract GenyTipping is
     function updateRecipient(address _user, string memory _labelName, bool _isActive) external onlyOwner {
         require(_user != address(0) && bytes(_labelName).length > 0, "Invalid data");
         require(labels[_labelName].active, "Label not active");
-
         recipients[_user] = Recipient({
             labelName: _labelName,
             dailyQuota: 0,
@@ -139,15 +140,15 @@ contract GenyTipping is
             lastQuotaReset: 0,
             isActive: _isActive
         });
-
         emit RecipientLabelUpdated(_user, _labelName);
         emit RecipientStatusUpdated(_user, _isActive);
     }
 
     /// @notice Submits a tip to a recipient
-    /// @param _recipient Recipient address
-    /// @param _amount Tip amount
-    /// @param _seasonId Season ID
+    /// @dev Consumes the sender's tipping quota from the GenyAirdrop contract
+    /// @param _recipient Address of the tip recipient
+    /// @param _amount Amount of tokens to tip
+    /// @param _seasonId Season ID for the tip
     /// @param _maxTippingAmount Maximum allowed tipping amount
     /// @param _merkleProof Merkle proof for eligibility
     function submitTip(
@@ -160,18 +161,15 @@ contract GenyTipping is
         require(_recipient != address(0) && _amount > 0, "Invalid tip data");
         require(token.balanceOf(msg.sender) >= minHolding, "Insufficient holding");
         require(recipients[msg.sender].isActive, "User not eligible");
-
         _updateQuota(msg.sender, _seasonId);
         Recipient storage recipient = recipients[msg.sender];
         require(recipient.usedQuota + _amount <= recipient.dailyQuota, "Exceeds daily quota");
-
         IGenyAirdrop airdrop = IGenyAirdrop(airdropContract);
         uint32 multiplier = labels[recipient.labelName].multiplier;
         require(airdrop.getTippingQuota(msg.sender, _seasonId, multiplier) >= _amount, "Insufficient tipping quota");
         require(!airdrop.isSeasonEnded(_seasonId), "Season ended");
-
-        airdrop.useTippingQuota(_recipient, _seasonId, _amount, multiplier, _maxTippingAmount, _merkleProof);
-
+        // Use sender's quota instead of recipient's
+        airdrop.useTippingQuota(msg.sender, _seasonId, _amount, multiplier, _maxTippingAmount, _merkleProof);
         recipient.usedQuota += _amount;
         tips.push(Tip({
             sender: msg.sender,
@@ -181,12 +179,11 @@ contract GenyTipping is
             timestamp: uint48(block.timestamp),
             labelName: recipient.labelName
         }));
-
         emit TipSubmitted(msg.sender, _recipient, _seasonId, _amount, recipient.labelName);
     }
 
     /// @dev Updates a user's tipping quota
-    /// @param _user User address
+    /// @param _user Address of the user
     /// @param _seasonId Season ID
     function _updateQuota(address _user, uint32 _seasonId) private {
         Recipient storage recipient = recipients[_user];
@@ -201,7 +198,7 @@ contract GenyTipping is
     }
 
     /// @notice Returns user quota details
-    /// @param _user User address
+    /// @param _user Address of the user
     /// @return labelName Label name
     /// @return dailyQuota Daily tipping quota
     /// @return usedQuota Used quota
@@ -268,6 +265,8 @@ contract GenyTipping is
         _unpause();
     }
 
+    /// @notice Authorizes contract upgrades
+    /// @param newImplementation Address of the new implementation
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }
 
