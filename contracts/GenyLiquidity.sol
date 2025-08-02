@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Genyleap
-
 pragma solidity 0.8.30;
 
 import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -15,7 +14,7 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 /// @author compez.eth
 /// @notice Manages liquidity allocation for GENY tokens with simple transfer to liquidity pools.
 /// @dev Allocates 16M free and 16M vested GENY tokens (over 24 months) for liquidity pools (e.g., Uniswap V3).
-///      Uses nonReentrant, Pausable, and UUPS upgradeability with Ownable2Step for security.
+/// Uses nonReentrant, Pausable, and UUPS upgradeability with Ownable2Step for security.
 /// @custom:security-contact security@genyleap.com
 contract GenyLiquidity is
     Initializable,
@@ -42,7 +41,6 @@ contract GenyLiquidity is
     /// @param pairedToken Address of the paired token
     /// @param pairedAmount Amount of paired token transferred
     event LiquidityAdded(address indexed poolAddress, uint96 genyAmount, address indexed pairedToken, uint96 pairedAmount);
-
     /// @notice Emitted when vested tokens are released
     /// @param amount Amount of vested tokens released
     event VestedTokensReleased(uint96 amount);
@@ -65,13 +63,11 @@ contract GenyLiquidity is
         require(_allocationManager != address(0), "Invalid allocation manager address");
         require(_owner != address(0), "Invalid owner address");
         require(_allocationManager.code.length > 0, "Allocation manager not a contract");
-
         __Ownable2Step_init();
         _transferOwnership(_owner);
         __ReentrancyGuard_init();
         __Pausable_init();
         __UUPSUpgradeable_init();
-
         token = IERC20(_token);
         allocationManager = _allocationManager;
         vestingStartTime = uint48(block.timestamp);
@@ -94,17 +90,21 @@ contract GenyLiquidity is
         require(pairedAmount > 0, "Invalid paired amount");
         require(poolAddress.code.length > 0, "Pool not a contract");
 
-        uint256 totalAvailable = FREE_LIQUIDITY + getReleasableVested();
+        uint256 totalAvailable = FREE_LIQUIDITY + getReleasableVested() - totalTransferred;
         require(totalAvailable >= genyAmount, "Insufficient GENY balance");
         require(token.balanceOf(allocationManager) >= genyAmount, "Insufficient GENY in allocation");
         require(token.allowance(allocationManager, address(this)) >= genyAmount, "Insufficient GENY allowance");
         require(IERC20(pairedToken).balanceOf(owner()) >= pairedAmount, "Insufficient paired token balance");
         require(IERC20(pairedToken).allowance(owner(), address(this)) >= pairedAmount, "Insufficient paired token allowance");
 
+        // Calculate how much of genyAmount comes from vested tokens
+        uint256 freeAvailable = FREE_LIQUIDITY > totalTransferred ? FREE_LIQUIDITY - totalTransferred : 0;
+        uint96 vestedUsed = freeAvailable >= genyAmount ? 0 : uint96(genyAmount - freeAvailable);
+        vestedReleased += vestedUsed; // Update vestedReleased for vested tokens used
         totalTransferred += genyAmount;
+
         token.safeTransferFrom(allocationManager, poolAddress, genyAmount);
         IERC20(pairedToken).safeTransferFrom(owner(), poolAddress, pairedAmount);
-
         emit LiquidityAdded(poolAddress, genyAmount, pairedToken, pairedAmount);
     }
 
@@ -115,7 +115,6 @@ contract GenyLiquidity is
         require(amount > 0, "No tokens to release");
         require(token.balanceOf(allocationManager) >= amount, "Insufficient GENY in allocation");
         require(token.allowance(allocationManager, address(this)) >= amount, "Insufficient GENY allowance");
-
         vestedReleased += amount;
         token.safeTransferFrom(allocationManager, address(this), amount);
         emit VestedTokensReleased(amount);
@@ -125,7 +124,6 @@ contract GenyLiquidity is
     /// @return amount Amount of vested tokens releasable
     function getReleasableVested() public view returns (uint96 amount) {
         if (block.timestamp < vestingStartTime) return 0;
-
         uint48 elapsed = uint48(block.timestamp - vestingStartTime);
         if (elapsed >= VESTING_DURATION) {
             amount = uint96(VESTED_LIQUIDITY - vestedReleased);
