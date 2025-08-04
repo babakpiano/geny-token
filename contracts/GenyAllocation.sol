@@ -15,40 +15,40 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 /// @title GenyAllocation
 /// @author compez.eth
 /// @notice Manages multiple token allocations (vested and unlocked) for the Genyleap ecosystem with customizable vesting schedules.
-/// @dev Uses OpenZeppelin upgradeable contracts with Ownable2Step for enhanced security. Supports multiple beneficiaries and vesting schedules.
-///      The owner must be a multisig contract (e.g., Gnosis Safe) for secure governance.
-///      Uses block.timestamp for vesting calculations, which is safe for long-term vesting (e.g., months) as miner manipulation is negligible.
+/// @dev Uses OpenZeppelin upgradeable contracts with Ownable2Step for secure upgradability.
+///      All privileged actions are gated via owner (must be a multisig/safe).
+///      Uses block.timestamp for vesting calculations (suitable for long-term vesting).
 /// @custom:security-contact security@genyleap.com
 contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
-    IERC20 public token; // GENY token contract
-    bool private tokenSet; // Flag to track if token is set
-    uint256 public totalReleasedTokens; // Tracks total released tokens (vested + unlocked)
-    address public timelock; // TimelockController for governance upgrades
-    uint256 public constant TOTAL_SUPPLY = 2.56e8 * 1e18; // Fixed total supply
-    uint48 public constant MAX_VESTING_DURATION = 48 * 30 days; // Max 48 months
+    IERC20 public token; ///< GENY token contract
+    bool private tokenSet; ///< Flag to track if token is set
+    uint256 public totalReleasedTokens; ///< Tracks total released tokens (vested + unlocked)
+    uint256 public constant TOTAL_SUPPLY = 2.56e8 * 1e18; ///< Fixed total supply (256,000,000)
+    uint48 public constant MAX_VESTING_DURATION = 48 * 30 days; ///< Max 48 months
+    uint48 public deploymentTime; ///< Deployment timestamp for upgrade/maturity logic
+    bool public upgradesDisabled; ///< Flag to disable upgrades after maturity
 
     /// @dev Struct to store allocation details for each beneficiary, optimized for storage packing
     struct Allocation {
-        address beneficiary; // Address receiving tokens (e.g., multisig, DAO, pool)
-        uint48 startTime; // Vesting start time
-        uint48 cliffSeconds; // Cliff period in seconds
-        uint48 durationSeconds; // Total vesting duration in seconds
-        uint48 intervalSeconds; // Release interval in seconds (e.g., monthly)
-        uint96 vestedAmount; // Total vested tokens
-        uint96 unlockedAmount; // Total unlocked tokens
-        uint96 releasedVestedAmount; // Vested tokens released so far
-        uint96 withdrawnUnlockedAmount; // Unlocked tokens withdrawn so far
-        bool exists; // Flag to prevent duplicate allocations
+        address beneficiary; ///< Address receiving tokens (e.g., multisig, DAO, pool)
+        uint48 startTime; ///< Vesting start time
+        uint48 cliffSeconds; ///< Cliff period in seconds
+        uint48 durationSeconds; ///< Total vesting duration in seconds
+        uint48 intervalSeconds; ///< Release interval in seconds (e.g., monthly)
+        uint96 vestedAmount; ///< Total vested tokens
+        uint96 unlockedAmount; ///< Total unlocked tokens
+        uint96 releasedVestedAmount; ///< Vested tokens released so far
+        uint96 withdrawnUnlockedAmount; ///< Unlocked tokens withdrawn so far
+        bool exists; ///< Flag to prevent duplicate allocations
     }
 
     /// @dev Mapping of allocation IDs to Allocation details
     mapping(uint256 allocationId => Allocation) public allocations;
-    uint256 public allocationCount; // Total number of allocations
-    uint256 public totalAllocated; // Total tokens allocated (vested + unlocked)
-    bool public upgradesDisabled; // Flag to disable upgrades after maturity
+    uint256 public allocationCount; ///< Total number of allocations
+    uint256 public totalAllocated;  ///< Total tokens allocated (vested + unlocked)
 
     /// @notice Emitted when a new allocation is created
     event AllocationCreated(
@@ -93,13 +93,13 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         _disableInitializers();
     }
 
-    /// @notice Initializes the allocation contract
-    /// @dev The owner must be a multisig contract (e.g., Gnosis Safe) for secure governance.
-    /// @param newOwner Address of the contract owner (multisig)
-    /// @param timelockAddress Address of the TimelockController
-    function initialize(address newOwner, address timelockAddress) external initializer {
+    /**
+     * @notice Initializes the allocation contract
+     * @dev The owner must be a multisig contract (e.g., Gnosis Safe) for secure governance.
+     * @param newOwner Address of the contract owner (multisig)
+     */
+    function initialize(address newOwner) external initializer {
         require(newOwner != address(0), "Invalid owner");
-        require(timelockAddress != address(0), "Invalid timelock");
 
         __Ownable2Step_init();
         _transferOwnership(newOwner);
@@ -107,13 +107,15 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         __ReentrancyGuard_init();
         __Pausable_init();
 
-        timelock = timelockAddress;
         allocationCount = 1; // Start from 1 to avoid zero-to-one storage writes
+        deploymentTime = uint48(block.timestamp);
     }
 
-    /// @notice Sets the GENY token address
-    /// @dev Only callable by the owner (multisig) and only once
-    /// @param token_ Address of the GENY token contract
+    /**
+     * @notice Sets the GENY token address
+     * @dev Only callable by the owner (multisig) and only once
+     * @param token_ Address of the GENY token contract
+     */
     function setToken(address token_) external onlyOwner {
         require(token_ != address(0), "Invalid token");
         require(!tokenSet, "Token already set");
@@ -122,10 +124,12 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         emit TokenSet(token_);
     }
 
-    /// @notice Approves a spender to transfer tokens from this contract
-    /// @dev Only callable by the owner (multisig)
-    /// @param spender Address of the spender
-    /// @param amount Amount of tokens to approve
+    /**
+     * @notice Approves a spender to transfer tokens from this contract
+     * @dev Only callable by the owner (multisig)
+     * @param spender Address of the spender
+     * @param amount Amount of tokens to approve
+     */
     function approveSpender(address spender, uint256 amount) external onlyOwner tokenRequired {
         require(spender != address(0), "Invalid spender");
         token.approve(spender, amount);
@@ -138,15 +142,17 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         _;
     }
 
-    /// @notice Creates a new allocation
-    /// @dev The owner (multisig) must ensure the allocation ID is unique and parameters align with tokenomics.
-    /// @param allocationId Unique ID for the allocation
-    /// @param beneficiary Address to receive tokens
-    /// @param vestedAmount Total vested tokens
-    /// @param unlockedAmount Total unlocked tokens
-    /// @param cliffSeconds Cliff period in seconds
-    /// @param durationSeconds Total vesting duration in seconds
-    /// @param intervalSeconds Release interval in seconds
+    /**
+     * @notice Creates a new allocation
+     * @dev The owner (multisig) must ensure the allocation ID is unique and parameters align with tokenomics.
+     * @param allocationId Unique ID for the allocation
+     * @param beneficiary Address to receive tokens
+     * @param vestedAmount Total vested tokens
+     * @param unlockedAmount Total unlocked tokens
+     * @param cliffSeconds Cliff period in seconds
+     * @param durationSeconds Total vesting duration in seconds
+     * @param intervalSeconds Release interval in seconds
+     */
     function createAllocation(
         uint256 allocationId,
         address beneficiary,
@@ -164,7 +170,7 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
             require(durationSeconds > cliffSeconds, "Invalid duration");
             require(intervalSeconds != 0, "Invalid interval");
             require(intervalSeconds < durationSeconds, "Invalid interval");
-            require(durationSeconds <= MAX_VESTING_DURATION, "Duration too long"); // Limit to 48 months
+            require(durationSeconds <= MAX_VESTING_DURATION, "Duration too long");
         }
 
         address thisContract = address(this);
@@ -175,7 +181,7 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         allocation.beneficiary = beneficiary;
         allocation.vestedAmount = vestedAmount;
         allocation.unlockedAmount = unlockedAmount;
-        allocation.startTime = uint48(block.timestamp); // Safe for long-term vesting
+        allocation.startTime = uint48(block.timestamp);
         allocation.cliffSeconds = cliffSeconds;
         allocation.durationSeconds = durationSeconds;
         allocation.intervalSeconds = intervalSeconds;
@@ -183,7 +189,7 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
 
         uint256 oldTotal = totalAllocated;
         totalAllocated = totalAllocated + vestedAmount + unlockedAmount;
-        allocationCount++; // Increment allocation count
+        allocationCount++;
         emit TotalAllocatedUpdated(oldTotal, totalAllocated);
 
         emit AllocationCreated(
@@ -197,9 +203,11 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         );
     }
 
-    /// @notice Releases vested tokens for a specific allocation
-    /// @dev Callable by anyone, but tokens are sent to the predefined beneficiary
-    /// @param allocationId ID of the allocation
+    /**
+     * @notice Releases vested tokens for a specific allocation
+     * @dev Callable by anyone, but tokens are sent to the predefined beneficiary
+     * @param allocationId ID of the allocation
+     */
     function releaseVested(uint256 allocationId) external nonReentrant whenNotPaused tokenRequired {
         Allocation storage allocation = allocations[allocationId];
         require(allocation.exists, "Invalid allocation");
@@ -209,15 +217,17 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         require(releasable != 0, "No tokens to release");
 
         allocation.releasedVestedAmount = allocation.releasedVestedAmount + releasable;
-        totalReleasedTokens += releasable; // Update total released tokens
+        totalReleasedTokens += releasable;
         token.safeTransfer(allocation.beneficiary, releasable);
         emit VestedTokensReleased(allocationId, allocation.beneficiary, releasable);
     }
 
-    /// @notice Withdraws unlocked tokens for a specific allocation
-    /// @dev Only callable by the owner (multisig)
-    /// @param allocationId ID of the allocation
-    /// @param amount Amount to withdraw
+    /**
+     * @notice Withdraws unlocked tokens for a specific allocation
+     * @dev Only callable by the owner (multisig)
+     * @param allocationId ID of the allocation
+     * @param amount Amount to withdraw
+     */
     function withdrawUnlocked(uint256 allocationId, uint96 amount) external onlyOwner nonReentrant whenNotPaused tokenRequired {
         Allocation storage allocation = allocations[allocationId];
         require(allocation.exists, "Invalid allocation");
@@ -225,14 +235,16 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         require(amount <= allocation.unlockedAmount - allocation.withdrawnUnlockedAmount, "Insufficient balance");
 
         allocation.withdrawnUnlockedAmount = allocation.withdrawnUnlockedAmount + amount;
-        totalReleasedTokens += amount; // Update total released tokens
+        totalReleasedTokens += amount;
         token.safeTransfer(allocation.beneficiary, amount);
         emit UnlockedTokensWithdrawn(allocationId, allocation.beneficiary, amount);
     }
 
-    /// @notice Cancels an existing allocation
-    /// @dev Only callable by the owner (multisig). Removes allocation and updates total allocated amount.
-    /// @param allocationId ID of the allocation to cancel
+    /**
+     * @notice Cancels an existing allocation
+     * @dev Only callable by the owner (multisig). Removes allocation and updates total allocated amount.
+     * @param allocationId ID of the allocation to cancel
+     */
     function cancelAllocation(uint256 allocationId) external onlyOwner nonReentrant {
         Allocation storage allocation = allocations[allocationId];
         require(allocation.exists, "Invalid allocation");
@@ -250,10 +262,12 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         emit AllocationCancelled(allocationId, beneficiary, totalRemaining);
     }
 
-    /// @notice Updates the beneficiary for a specific allocation
-    /// @dev Only callable by the owner (multisig)
-    /// @param allocationId ID of the allocation
-    /// @param newBeneficiary New beneficiary address
+    /**
+     * @notice Updates the beneficiary for a specific allocation
+     * @dev Only callable by the owner (multisig)
+     * @param allocationId ID of the allocation
+     * @param newBeneficiary New beneficiary address
+     */
     function updateBeneficiary(uint256 allocationId, address newBeneficiary) external onlyOwner {
         Allocation storage allocation = allocations[allocationId];
         require(allocation.exists, "Invalid allocation");
@@ -265,23 +279,24 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         emit BeneficiaryUpdated(allocationId, oldBeneficiary, newBeneficiary);
     }
 
-    /// @notice Calculates the releasable vested amount for an allocation
-    /// @dev Uses Math.mulDiv for precise calculations to avoid precision loss
-    /// @param allocationId ID of the allocation
-    /// @return Amount of vested tokens that can be released
+    /**
+     * @notice Calculates the releasable vested amount for an allocation
+     * @dev Uses Math.mulDiv for precise calculations to avoid precision loss
+     * @param allocationId ID of the allocation
+     * @return Amount of vested tokens that can be released
+     */
     function getReleasableVestedAmount(uint256 allocationId) public view returns (uint256) {
         Allocation storage allocation = allocations[allocationId];
         if (!allocation.exists || block.timestamp < allocation.startTime + allocation.cliffSeconds || allocation.vestedAmount == 0) {
             return 0;
         }
 
-        uint48 elapsedTime = uint48(block.timestamp) - allocation.startTime; // Safe for long-term vesting
+        uint48 elapsedTime = uint48(block.timestamp) - allocation.startTime;
         if (elapsedTime >= allocation.durationSeconds + allocation.cliffSeconds) {
             return allocation.vestedAmount - allocation.releasedVestedAmount;
         }
 
         uint48 vestingElapsed = elapsedTime - allocation.cliffSeconds;
-        // Use Math.mulDiv to avoid precision loss in vesting calculations
         uint256 vestedReleasable = Math.mulDiv(
             allocation.vestedAmount,
             vestingElapsed,
@@ -291,10 +306,12 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         return vestedReleasable - allocation.releasedVestedAmount;
     }
 
-    /// @notice Gets remaining vested and unlocked amounts for an allocation
-    /// @param allocationId ID of the allocation
-    /// @return remainingVested Remaining vested tokens
-    /// @return remainingUnlocked Remaining unlocked tokens
+    /**
+     * @notice Gets remaining vested and unlocked amounts for an allocation
+     * @param allocationId ID of the allocation
+     * @return remainingVested Remaining vested tokens
+     * @return remainingUnlocked Remaining unlocked tokens
+     */
     function getRemainingAmounts(uint256 allocationId) external view returns (uint256 remainingVested, uint256 remainingUnlocked) {
         Allocation storage allocation = allocations[allocationId];
         require(allocation.exists, "Invalid allocation");
@@ -302,53 +319,59 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         remainingUnlocked = allocation.unlockedAmount - allocation.withdrawnUnlockedAmount;
     }
 
-    /// @notice Gets the total token balance of the contract
-    /// @return Total token balance
+    /**
+     * @notice Gets the total token balance of the contract
+     * @return Total token balance
+     */
     function getBalance() external view tokenRequired returns (uint256) {
-        address thisContract = address(this);
-        return token.balanceOf(thisContract);
+        return token.balanceOf(address(this));
     }
 
-    /// @notice Returns the total released tokens (vested and unlocked) across all allocations
-    /// @return Total released tokens
+    /**
+     * @notice Returns the total released tokens (vested and unlocked) across all allocations
+     * @return Total released tokens
+     */
     function getTotalReleasedTokens() external view tokenRequired returns (uint256) {
         return totalReleasedTokens;
     }
 
-    /// @notice Pauses the contract
-    /// @dev Only callable by the owner (multisig)
+    /**
+     * @notice Pauses the contract
+     * @dev Only callable by the owner (multisig)
+     */
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpauses the contract
-    /// @dev Only callable by governance (via timelock)
-    function unpause() external onlyGovernance {
+    /**
+     * @notice Unpauses the contract
+     * @dev Only callable by the owner (multisig)
+     */
+    function unpause() external onlyOwner {
         _unpause();
     }
 
-    /// @notice Disables upgrades permanently after maturity
-    /// @dev Only callable by governance
-    function disableUpgrades() external onlyGovernance {
+    /**
+     * @notice Disables upgrades permanently after maturity
+     * @dev Only callable by the owner (multisig)
+     */
+    function disableUpgrades() external onlyOwner {
         require(!upgradesDisabled, "Upgrades disabled");
+        require(block.timestamp >= deploymentTime + 365 days, "Cannot disable upgrades before 1 year");
         upgradesDisabled = true;
         emit UpgradesDisabled();
     }
 
-    /// @notice Authorizes contract upgrades
-    /// @dev Only callable by governance (via timelock)
-    /// @param newImplementation Address of the new implementation
-    function _authorizeUpgrade(address newImplementation) internal override onlyGovernance {
+    /**
+     * @notice Authorizes contract upgrades
+     * @dev Only callable by the owner (multisig)
+     * @param newImplementation Address of the new implementation
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
         require(!upgradesDisabled, "Upgrades disabled");
         emit Upgraded(newImplementation);
     }
 
-    /// @dev Restricts functions to governance (via timelock)
-    modifier onlyGovernance() {
-        require(msg.sender == timelock, "Caller is not governance");
-        _;
-    }
-
     // Gap for future upgrades to avoid storage collisions
-    uint256[49] private __gap; // 50 slots reserved, minus one used
+    uint256[49] private __gap;
 }

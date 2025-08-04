@@ -21,15 +21,19 @@ contract GenyTreasury is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable
 
     /// @notice The GENY token contract
     IERC20 public token;
+
     /// @notice Address of the GenyAllocation contract
     address public allocation;
+
     /// @notice Address to hold bought-back tokens
     address public buybackPool;
+
     /// @notice Reserve for future buyback operations
     uint256 public buybackReserve;
 
     /// @notice Emitted when tokens are withdrawn from the treasury
     event TokensWithdrawn(address indexed to, uint256 amount);
+
     /// @notice Emitted when ETH is received for buyback reserve
     event BuybackReserveAdded(uint256 amount);
 
@@ -39,12 +43,12 @@ contract GenyTreasury is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable
     }
 
     /// @notice Initializes the treasury contract
-    /// @dev Restricted to the proxy admin to prevent unauthorized initialization. The owner must be a multisig contract (e.g., Gnosis Safe).
+    /// @dev The owner must be a multisig contract (e.g., Gnosis Safe).
     /// @param _token Address of the GENY token contract
     /// @param _allocation Address of the GenyAllocation contract
     /// @param _buybackPool Address to hold bought-back tokens
     /// @param _owner Address of the contract owner (multisig)
-    function initialize(address _token, address _allocation, address _buybackPool, address _owner) external initializer onlyProxyAdmin {
+    function initialize(address _token, address _allocation, address _buybackPool, address _owner) external initializer {
         require(_token != address(0), "Invalid token address");
         require(_allocation != address(0), "Invalid allocation address");
         require(_buybackPool != address(0), "Invalid buyback pool address");
@@ -57,12 +61,6 @@ contract GenyTreasury is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable
         token = IERC20(_token);
         allocation = _allocation;
         buybackPool = _buybackPool;
-    }
-
-    /// @dev Restricts function calls to the proxy admin
-    modifier onlyProxyAdmin() {
-        require(msg.sender == _getAdmin(), "Caller is not proxy admin");
-        _;
     }
 
     /// @notice Withdraws tokens from the treasury

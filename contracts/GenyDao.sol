@@ -8,13 +8,14 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts/governance/TimelockController.sol";
 import "@openzeppelin/contracts/governance/utils/IVotes.sol";
+import { IGenyAllocation } from "./interfaces/IGenyAllocation.sol";
+import { IGenyBurnManager } from "./interfaces/IGenyBurnManager.sol";
 
 /// @title GenyDAO
 /// @author compez.eth
 /// @notice Manages Genyleap Improvement Proposals (GIP) for decentralized governance in the Genyleap ecosystem.
-/// @dev Implements voting with 20% quorum for normal proposals and 50% for sensitive ones, 7-day voting period, and 2-day Timelock.
+/// @dev Implements voting with 20% quorum for normal proposals and 50% for sensitive ones, 7-day voting period.
 /// The owner must be a multisig contract (e.g., Gnosis Safe) for secure governance.
 /// Uses UUPS proxy pattern for upgradability.
 /// Assumes GENY token supports SafeERC20 and IVotes for transfers and voting.
@@ -29,7 +30,6 @@ contract GenyDAO is
     using SafeERC20 for IERC20;
 
     IVotes public token; // GENY token contract with IVotes interface
-    address public timelock; // Timelock for delayed execution
     address public burnManager; // GenyBurnManager for token burning
     address public allocationManager; // GenyAllocation for treasury management
     uint32 public minProposingPowerNormalPercent; // Basis points (0.1% = 10)
@@ -97,15 +97,13 @@ contract GenyDAO is
     /// @param _owner Address of the initial owner (multisig)
     /// @param _burnManager Address of the GenyBurnManager contract
     /// @param _allocationManager Address of the GenyAllocation contract
-    /// @param _timelock Address of the TimelockController contract
     function initialize(
         address _token,
         address _owner,
         address _burnManager,
-        address _allocationManager,
-        address _timelock
+        address _allocationManager
     ) external initializer {
-        _validateAddresses(_token, _owner, _burnManager, _allocationManager, _timelock);
+        _validateAddresses(_token, _owner, _burnManager, _allocationManager);
         __Ownable2Step_init();
         _transferOwnership(_owner);
         __ReentrancyGuard_init();
@@ -114,7 +112,6 @@ contract GenyDAO is
         token = IVotes(_token);
         burnManager = _burnManager;
         allocationManager = _allocationManager;
-        timelock = _timelock;
         minProposingPowerNormalPercent = 10; // 0.1%
         minProposingPowerSensitivePercent = 100; // 1%
         minVotingPower = 256 * 1e18;
@@ -188,10 +185,10 @@ contract GenyDAO is
         emit Voted(proposalId, msg.sender, support, weight);
     }
 
-    /// @notice Executes a proposal after voting ends
-    /// @dev Callable by anyone after voting period
+    /// @notice Executes a proposal after voting ends (no timelock, onlyOwner can execute)
+    /// @dev Only the owner (multisig) can execute proposals for security.
     /// @param proposalId The ID of the proposal
-    function executeProposal(uint256 proposalId) external nonReentrant whenNotPaused {
+    function executeProposal(uint256 proposalId) external onlyOwner nonReentrant whenNotPaused {
         Proposal storage proposal = proposals[proposalId];
         require(block.timestamp > proposal.endTime, "Voting not ended");
         require(!proposal.executed, "Already executed");
@@ -199,22 +196,20 @@ contract GenyDAO is
         uint32 quorumPercent = proposal.isSensitive ? QUORUM_SENSITIVE : QUORUM_NORMAL;
         require(proposal.totalVotes >= (getCirculatingSupply() * quorumPercent) / 1e4, "Quorum not met");
         proposal.executed = true;
-        TimelockController(payable(timelock)).scheduleBatch(
-            proposal.targets,
-            proposal.values,
-            proposal.calldatas,
-            bytes32(proposalId),
-            "GenyDAO Proposal Execution",
-            2 days
-        );
+
+        // Execute each call atomically, revert if any fails
+        for (uint256 i = 0; i < proposal.targets.length; i++) {
+            (bool success, ) = proposal.targets[i].call{value: proposal.values[i]}(proposal.calldatas[i]);
+            require(success, "Proposal call failed");
+        }
         emit ProposalExecuted(proposalId);
     }
 
     /// @notice Updates the minimum proposing power percentage
-    /// @dev Only callable by governance (via timelock)
+    /// @dev Only callable by owner (multisig)
     /// @param isSensitive True for sensitive proposals, false for normal
     /// @param newPercent New percentage (in basis points)
-    function updateMinProposingPowerPercent(bool isSensitive, uint32 newPercent) external onlyGovernance {
+    function updateMinProposingPowerPercent(bool isSensitive, uint32 newPercent) external onlyOwner {
         require(newPercent >= MIN_PROPOSING_PERCENT_MIN && newPercent <= MIN_PROPOSING_PERCENT_MAX, "Invalid proposing percent");
         if (isSensitive) {
             uint32 oldPercent = minProposingPowerSensitivePercent;
@@ -228,27 +223,18 @@ contract GenyDAO is
     }
 
     /// @notice Updates the minimum voting power
-    /// @dev Only callable by governance (via timelock)
+    /// @dev Only callable by owner (multisig)
     /// @param newPower New minimum voting power
-    function updateMinVotingPower(uint256 newPower) external onlyGovernance {
+    function updateMinVotingPower(uint256 newPower) external onlyOwner {
         require(newPower >= MIN_VOTING_POWER_MIN && newPower <= MIN_VOTING_POWER_MAX, "Invalid voting power");
         emit MinVotingPowerUpdated(minVotingPower, newPower);
         minVotingPower = newPower;
     }
 
-    /// @notice Assigns or updates an investor label by owner
-    /// @dev Only callable by the owner (multisig)
+    /// @notice Assigns or updates an investor label by owner (multisig)
     /// @param investor Address of the investor
     /// @param label New label to assign
     function setInvestorLabel(address investor, InvestorLabel label) external onlyOwner {
-        _updateInvestorLabel(investor, label);
-    }
-
-    /// @notice Updates an investor label via GIP
-    /// @dev Only callable by governance (via timelock)
-    /// @param investor Address of the investor
-    /// @param label New label to assign
-    function updateInvestorLabel(address investor, InvestorLabel label) external onlyGovernance {
         _updateInvestorLabel(investor, label);
     }
 
@@ -271,11 +257,9 @@ contract GenyDAO is
         _pause();
     }
 
-    /// @notice Unpauses the contract, allowing operations to resume after an emergency pause.
-    /// @dev Only callable by governance via TimelockController to ensure security.
-    /// Multisig must initiate this action through governance.
-    /// The caller must be the Timelock contract address.
-    function unpause() external onlyGovernance {
+    /// @notice Unpauses the contract
+    /// @dev Only callable by the owner (multisig)
+    function unpause() external onlyOwner {
         _unpause();
     }
 
@@ -285,8 +269,8 @@ contract GenyDAO is
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     /// @dev Validates initialization addresses
-    function _validateAddresses(address _token, address _owner, address _burnManager, address _allocationManager, address _timelock) private pure {
-        require(_token != address(0) && _owner != address(0) && _burnManager != address(0) && _allocationManager != address(0) && _timelock != address(0), "Invalid address");
+    function _validateAddresses(address _token, address _owner, address _burnManager, address _allocationManager) private pure {
+        require(_token != address(0) && _owner != address(0) && _burnManager != address(0) && _allocationManager != address(0), "Invalid address");
     }
 
     /// @dev Updates investor label with event emission
@@ -316,17 +300,4 @@ contract GenyDAO is
     function getProposalCalldatas(uint256 proposalId) external view returns (bytes[] memory) {
         return proposals[proposalId].calldatas;
     }
-
-    modifier onlyGovernance() {
-        require(msg.sender == address(timelock), "Caller is not the timelock");
-        _;
-    }
-}
-
-interface IGenyBurnManager {
-    function burnFromContract(uint256 amount) external;
-}
-
-interface IGenyAllocation {
-    function getTotalReleasedTokens() external view returns (uint256);
 }

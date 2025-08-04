@@ -10,12 +10,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
-
-/// @dev GenyGuard interface for secure recovery mode.
-interface IGenyGuard {
-    function isRecoveryModeActive(address user) external view returns (bool);
-    function getRecoveryWallet(address user) external view returns (address);
-}
+import { IGenyGuard } from "./interfaces/IGenyGuard.sol";
 
 /// @title GenyVesting
 /// @author compez.eth

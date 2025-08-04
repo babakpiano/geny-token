@@ -10,6 +10,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import { IGenyGuard } from "./interfaces/IGenyGuard.sol";
 
 /// @title GenyAirdrop
 /// @author compez.eth
@@ -381,8 +382,4 @@ contract GenyAirdrop is
         require(msg.sender == timelock, "Caller is not DAO");
         _;
     }
-}
-
-interface IGenyAllocation {
-    function getTotalReleasedTokens() external view returns (uint256);
 }

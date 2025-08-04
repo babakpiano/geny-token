@@ -9,19 +9,8 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import { IGenyGuard } from "./interfaces/IGenyGuard.sol";
 
-/// @dev Interface for GenyGuard ultra-secure recovery logic
-interface IGenyGuard {
-    /// @notice Checks if recovery mode is active for a user
-    /// @param user The address of the user
-    /// @return True if recovery mode is active
-    function isRecoveryModeActive(address user) external view returns (bool);
-
-    /// @notice Retrieves the recovery wallet for a user
-    /// @param user The address of the user
-    /// @return The address of the recovery wallet
-    function getRecoveryWallet(address user) external view returns (address);
-}
 
 /// @title GenyStaking
 /// @author compez.eth

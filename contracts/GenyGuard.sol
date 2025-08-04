@@ -8,7 +8,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 
 /**
- * @title GenyGuard
+ * @title GenyGuard (Emergency Recovery)
  * @author compez.eth
  * @notice Modular, non-custodial, one-time code recovery protection for any EVM address. All sensitive actions require single-use, rotating recovery codes. No plaintext code is ever stored on-chain.
  * @dev UUPS Upgradeable implementation. Recovery codes are always 28-character alphanumeric (A-Z, 0-9), case-insensitive. Each sensitive operation requires the current code and a new code for rotation (hash of new code). Only the code hash is stored.
