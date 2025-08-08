@@ -10,7 +10,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
-import { IGenyGuard } from "./interfaces/IGenyGuard.sol";
+import {IGenyGuard} from "./interfaces/IGenyGuard.sol";
 
 /// @title GenyVesting
 /// @author compez.eth
@@ -162,4 +162,9 @@ contract GenyVesting is
 
     /// @dev Authorizes contract upgrades (onlyOwner).
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    
+    /// @dev Storage gap for future variable additions (OZ pattern).
+    /// If you add new state variables at the end in a future upgrade,
+    /// decrease the length of this array by the same number of slots.
+    uint256[50] private __gap;
 }

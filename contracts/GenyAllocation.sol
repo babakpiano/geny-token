@@ -14,90 +14,75 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title GenyAllocation
 /// @author compez.eth
-/// @notice Manages multiple token allocations (vested and unlocked) for the Genyleap ecosystem with customizable vesting schedules.
-/// @dev Uses OpenZeppelin upgradeable contracts with Ownable2Step for secure upgradability.
-///      All privileged actions are gated via owner (must be a multisig/safe).
-///      Uses block.timestamp for vesting calculations (suitable for long-term vesting).
-/// @custom:security-contact security@genyleap.com
-contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
+/// @notice Manages multiple token allocations (vested and unlocked) with linear vesting after a cliff.
+/// @dev Upgradeable via UUPS + Ownable2Step. Privileged actions gated by the owner (expected multisig).
+///      Uses block.timestamp for long-term vesting; intervalSeconds is informational (for off-chain tooling).
+contract GenyAllocation is
+    Initializable,
+    Ownable2StepUpgradeable,
+    UUPSUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable
+{
     using SafeERC20 for IERC20;
     using Math for uint256;
 
-    IERC20 public token; ///< GENY token contract
-    bool private tokenSet; ///< Flag to track if token is set
-    uint256 public totalReleasedTokens; ///< Tracks total released tokens (vested + unlocked)
-    uint256 public constant TOTAL_SUPPLY = 2.56e8 * 1e18; ///< Fixed total supply (256,000,000)
-    uint48 public constant MAX_VESTING_DURATION = 48 * 30 days; ///< Max 48 months
-    uint48 public deploymentTime; ///< Deployment timestamp for upgrade/maturity logic
-    bool public upgradesDisabled; ///< Flag to disable upgrades after maturity
+    // ---- Config / State ----
+    IERC20 public token;                // GENY token contract
+    bool private tokenSet;              // True once token is set
+    uint256 public totalReleasedTokens; // Sum of all released (vested + unlocked)
 
-    /// @dev Struct to store allocation details for each beneficiary, optimized for storage packing
+    uint256 public constant TOTAL_SUPPLY = 2.56e8 * 1e18; // 256,000,000 * 1e18
+    uint48  public constant MAX_VESTING_DURATION = 48 * 30 days;
+
+    uint48 public deploymentTime;       // For upgrade maturity logic (1y lock)
+    bool   public upgradesDisabled;
+
+    /// @dev Packed struct for an allocation
     struct Allocation {
-        address beneficiary; ///< Address receiving tokens (e.g., multisig, DAO, pool)
-        uint48 startTime; ///< Vesting start time
-        uint48 cliffSeconds; ///< Cliff period in seconds
-        uint48 durationSeconds; ///< Total vesting duration in seconds
-        uint48 intervalSeconds; ///< Release interval in seconds (e.g., monthly)
-        uint96 vestedAmount; ///< Total vested tokens
-        uint96 unlockedAmount; ///< Total unlocked tokens
-        uint96 releasedVestedAmount; ///< Vested tokens released so far
-        uint96 withdrawnUnlockedAmount; ///< Unlocked tokens withdrawn so far
-        bool exists; ///< Flag to prevent duplicate allocations
+        address beneficiary;              // Receiver (multisig/DAO/pool)
+        uint48  startTime;                // Vesting start
+        uint48  cliffSeconds;             // Cliff length
+        uint48  durationSeconds;          // Linear vest duration (post-cliff)
+        uint48  intervalSeconds;          // UI hint (not used on-chain for math)
+        uint96  vestedAmount;             // Total vested amount
+        uint96  unlockedAmount;           // Total unlocked amount
+        uint96  releasedVestedAmount;     // Already released vested
+        uint96  withdrawnUnlockedAmount;  // Already withdrawn unlocked
+        bool    exists;                   // Guard for presence
     }
 
-    /// @dev Mapping of allocation IDs to Allocation details
     mapping(uint256 allocationId => Allocation) public allocations;
-    uint256 public allocationCount; ///< Total number of allocations
-    uint256 public totalAllocated;  ///< Total tokens allocated (vested + unlocked)
+    uint256 public allocationCount;
+    uint256 public totalAllocated;       // Sum of all allocated (vested + unlocked)
 
-    /// @notice Emitted when a new allocation is created
+    // ---- Events ----
     event AllocationCreated(
         uint256 indexed allocationId,
         address indexed beneficiary,
-        uint96 indexed vestedAmount,
-        uint96 unlockedAmount,
-        uint48 cliffSeconds,
-        uint48 durationSeconds,
-        uint48 intervalSeconds
+        uint96  indexed vestedAmount,
+        uint96  unlockedAmount,
+        uint48  cliffSeconds,
+        uint48  durationSeconds,
+        uint48  intervalSeconds
     );
-
-    /// @notice Emitted when vested tokens are released
     event VestedTokensReleased(uint256 indexed allocationId, address indexed beneficiary, uint96 indexed amount);
-
-    /// @notice Emitted when unlocked tokens are withdrawn
     event UnlockedTokensWithdrawn(uint256 indexed allocationId, address indexed beneficiary, uint96 indexed amount);
-
-    /// @notice Emitted when a beneficiary address is updated
     event BeneficiaryUpdated(uint256 indexed allocationId, address indexed oldBeneficiary, address indexed newBeneficiary);
-
-    /// @notice Emitted when an allocation is cancelled
     event AllocationCancelled(uint256 indexed allocationId, address indexed beneficiary, uint256 remaining);
-
-    /// @notice Emitted when total allocated amount changes
     event TotalAllocatedUpdated(uint256 indexed oldTotal, uint256 indexed newTotal);
-
-    /// @notice Emitted when the token address is set
     event TokenSet(address indexed token);
-
-    /// @notice Emitted when allowance is set for a spender
     event AllowanceSet(address indexed spender, uint256 amount);
-
-    /// @notice Emitted when the contract is upgraded
-    event Upgraded(address indexed newImplementation);
-
-    /// @notice Emitted when upgrades are disabled
     event UpgradesDisabled();
+
+    // ---- Init ----
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    /**
-     * @notice Initializes the allocation contract
-     * @dev The owner must be a multisig contract (e.g., Gnosis Safe) for secure governance.
-     * @param newOwner Address of the contract owner (multisig)
-     */
+    /// @notice UUPS initializer
     function initialize(address newOwner) external initializer {
         require(newOwner != address(0), "Invalid owner");
 
@@ -107,91 +92,100 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         __ReentrancyGuard_init();
         __Pausable_init();
 
-        allocationCount = 1; // Start from 1 to avoid zero-to-one storage writes
+        allocationCount = 1; // avoid zero-to-one write pattern later
         deploymentTime = uint48(block.timestamp);
     }
 
-    /**
-     * @notice Sets the GENY token address
-     * @dev Only callable by the owner (multisig) and only once
-     * @param token_ Address of the GENY token contract
-     */
+    // ---- Admin ----
+
+    /// @notice Set the ERC20 token address (one-time)
     function setToken(address token_) external onlyOwner {
         require(token_ != address(0), "Invalid token");
         require(!tokenSet, "Token already set");
+        require(token_.code.length > 0, "Token must be contract");
         token = IERC20(token_);
         tokenSet = true;
         emit TokenSet(token_);
     }
 
-    /**
-     * @notice Approves a spender to transfer tokens from this contract
-     * @dev Only callable by the owner (multisig)
-     * @param spender Address of the spender
-     * @param amount Amount of tokens to approve
-     */
+    /// @notice Approve spender with OZ v5-safe pattern
     function approveSpender(address spender, uint256 amount) external onlyOwner tokenRequired {
         require(spender != address(0), "Invalid spender");
-        token.approve(spender, amount);
+        token.forceApprove(spender, amount);
         emit AllowanceSet(spender, amount);
     }
 
-    /// @dev Modifier to ensure token is set before operations
-    modifier tokenRequired() {
-        require(tokenSet, "Token not set");
-        _;
+    /// @notice Pause all state-changing flows except view
+    function pause() external onlyOwner { _pause(); }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner { _unpause(); }
+
+    /// @notice Permanently disable upgrades after 1 year from initialize
+    function disableUpgrades() external onlyOwner {
+        require(!upgradesDisabled, "Upgrades disabled");
+        require(block.timestamp >= deploymentTime + 365 days, "Too early");
+        upgradesDisabled = true;
+        emit UpgradesDisabled();
     }
 
+    /// @inheritdoc UUPSUpgradeable
+    function _authorizeUpgrade(address /*newImplementation*/) internal view override onlyOwner {
+        require(!upgradesDisabled, "Upgrades disabled");
+    }
+
+    // ---- Allocations ----
+
     /**
-     * @notice Creates a new allocation
-     * @dev The owner (multisig) must ensure the allocation ID is unique and parameters align with tokenomics.
-     * @param allocationId Unique ID for the allocation
-     * @param beneficiary Address to receive tokens
-     * @param vestedAmount Total vested tokens
-     * @param unlockedAmount Total unlocked tokens
-     * @param cliffSeconds Cliff period in seconds
-     * @param durationSeconds Total vesting duration in seconds
-     * @param intervalSeconds Release interval in seconds
+     * @notice Create a new allocation.
+     * @dev Requires contract balance to already hold enough tokens to back the new allocation.
      */
     function createAllocation(
         uint256 allocationId,
         address beneficiary,
-        uint96 vestedAmount,
-        uint96 unlockedAmount,
-        uint48 cliffSeconds,
-        uint48 durationSeconds,
-        uint48 intervalSeconds
-    ) external onlyOwner nonReentrant whenNotPaused tokenRequired {
+        uint96  vestedAmount,
+        uint96  unlockedAmount,
+        uint48  cliffSeconds,
+        uint48  durationSeconds,
+        uint48  intervalSeconds
+    )
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+        tokenRequired
+    {
         require(allocationId > 0, "Invalid allocation ID");
         require(!allocations[allocationId].exists, "Allocation already exists");
         require(beneficiary != address(0), "Invalid beneficiary");
         require(vestedAmount + unlockedAmount != 0, "No tokens");
+
         if (vestedAmount > 0) {
-            require(durationSeconds > cliffSeconds, "Invalid duration");
+            require(durationSeconds > 0, "Invalid duration");
             require(intervalSeconds != 0, "Invalid interval");
             require(intervalSeconds < durationSeconds, "Invalid interval");
             require(durationSeconds <= MAX_VESTING_DURATION, "Duration too long");
         }
 
-        address thisContract = address(this);
-        require(totalAllocated + vestedAmount + unlockedAmount <= TOTAL_SUPPLY, "Exceeds total supply");
-        require(totalAllocated + vestedAmount + unlockedAmount <= token.balanceOf(thisContract), "Insufficient balance");
+        uint256 newTotal = totalAllocated + vestedAmount + unlockedAmount;
+        require(newTotal <= TOTAL_SUPPLY, "Exceeds total supply");
+        require(newTotal <= token.balanceOf(address(this)), "Insufficient balance");
 
-        Allocation storage allocation = allocations[allocationId];
-        allocation.beneficiary = beneficiary;
-        allocation.vestedAmount = vestedAmount;
-        allocation.unlockedAmount = unlockedAmount;
-        allocation.startTime = uint48(block.timestamp);
-        allocation.cliffSeconds = cliffSeconds;
-        allocation.durationSeconds = durationSeconds;
-        allocation.intervalSeconds = intervalSeconds;
-        allocation.exists = true;
+        Allocation storage a = allocations[allocationId];
+        a.beneficiary     = beneficiary;
+        a.vestedAmount    = vestedAmount;
+        a.unlockedAmount  = unlockedAmount;
+        a.startTime       = uint48(block.timestamp);
+        a.cliffSeconds    = cliffSeconds;
+        a.durationSeconds = durationSeconds;
+        a.intervalSeconds = intervalSeconds; // UI hint only
+        a.exists          = true;
 
         uint256 oldTotal = totalAllocated;
-        totalAllocated = totalAllocated + vestedAmount + unlockedAmount;
+        totalAllocated   = newTotal;
         allocationCount++;
-        emit TotalAllocatedUpdated(oldTotal, totalAllocated);
 
+        emit TotalAllocatedUpdated(oldTotal, totalAllocated);
         emit AllocationCreated(
             allocationId,
             beneficiary,
@@ -203,175 +197,137 @@ contract GenyAllocation is Initializable, Ownable2StepUpgradeable, UUPSUpgradeab
         );
     }
 
-    /**
-     * @notice Releases vested tokens for a specific allocation
-     * @dev Callable by anyone, but tokens are sent to the predefined beneficiary
-     * @param allocationId ID of the allocation
-     */
-    function releaseVested(uint256 allocationId) external nonReentrant whenNotPaused tokenRequired {
-        Allocation storage allocation = allocations[allocationId];
-        require(allocation.exists, "Invalid allocation");
-        require(block.timestamp >= allocation.startTime + allocation.cliffSeconds, "Cliff not reached");
+    /// @notice Release vested tokens to beneficiary (anyone can call).
+    function releaseVested(uint256 allocationId)
+        external
+        nonReentrant
+        whenNotPaused
+        tokenRequired
+    {
+        Allocation storage a = allocations[allocationId];
+        require(a.exists, "Invalid allocation");
+        require(block.timestamp >= a.startTime + a.cliffSeconds, "Cliff not reached");
 
         uint96 releasable = uint96(getReleasableVestedAmount(allocationId));
         require(releasable != 0, "No tokens to release");
 
-        allocation.releasedVestedAmount = allocation.releasedVestedAmount + releasable;
-        totalReleasedTokens += releasable;
-        token.safeTransfer(allocation.beneficiary, releasable);
-        emit VestedTokensReleased(allocationId, allocation.beneficiary, releasable);
+        a.releasedVestedAmount += releasable;
+        totalReleasedTokens    += releasable;
+        token.safeTransfer(a.beneficiary, releasable);
+
+        emit VestedTokensReleased(allocationId, a.beneficiary, releasable);
     }
 
-    /**
-     * @notice Withdraws unlocked tokens for a specific allocation
-     * @dev Only callable by the owner (multisig)
-     * @param allocationId ID of the allocation
-     * @param amount Amount to withdraw
-     */
-    function withdrawUnlocked(uint256 allocationId, uint96 amount) external onlyOwner nonReentrant whenNotPaused tokenRequired {
-        Allocation storage allocation = allocations[allocationId];
-        require(allocation.exists, "Invalid allocation");
+    /// @notice Withdraw unlocked tokens to beneficiary (owner only).
+    function withdrawUnlocked(uint256 allocationId, uint96 amount)
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+        tokenRequired
+    {
+        Allocation storage a = allocations[allocationId];
+        require(a.exists, "Invalid allocation");
         require(amount != 0, "Invalid amount");
-        require(amount <= allocation.unlockedAmount - allocation.withdrawnUnlockedAmount, "Insufficient balance");
+        require(amount <= a.unlockedAmount - a.withdrawnUnlockedAmount, "Insufficient balance");
 
-        allocation.withdrawnUnlockedAmount = allocation.withdrawnUnlockedAmount + amount;
-        totalReleasedTokens += amount;
-        token.safeTransfer(allocation.beneficiary, amount);
-        emit UnlockedTokensWithdrawn(allocationId, allocation.beneficiary, amount);
+        a.withdrawnUnlockedAmount += amount;
+        totalReleasedTokens       += amount;
+        token.safeTransfer(a.beneficiary, amount);
+
+        emit UnlockedTokensWithdrawn(allocationId, a.beneficiary, amount);
     }
 
-    /**
-     * @notice Cancels an existing allocation
-     * @dev Only callable by the owner (multisig). Removes allocation and updates total allocated amount.
-     * @param allocationId ID of the allocation to cancel
-     */
-    function cancelAllocation(uint256 allocationId) external onlyOwner nonReentrant {
-        Allocation storage allocation = allocations[allocationId];
-        require(allocation.exists, "Invalid allocation");
+    /// @notice Cancel an allocation and free its un-released amounts from totalAllocated.
+    function cancelAllocation(uint256 allocationId)
+        external
+        onlyOwner
+        nonReentrant
+    {
+        Allocation storage a = allocations[allocationId];
+        require(a.exists, "Invalid allocation");
 
-        uint256 remainingVested = allocation.vestedAmount - allocation.releasedVestedAmount;
-        uint256 remainingUnlocked = allocation.unlockedAmount - allocation.withdrawnUnlockedAmount;
-        uint256 totalRemaining = remainingVested + remainingUnlocked;
+        uint256 remainingVested   = uint256(a.vestedAmount) - uint256(a.releasedVestedAmount);
+        uint256 remainingUnlocked = uint256(a.unlockedAmount) - uint256(a.withdrawnUnlockedAmount);
+        uint256 totalRemaining    = remainingVested + remainingUnlocked;
 
         uint256 oldTotal = totalAllocated;
-        totalAllocated -= totalRemaining;
+        totalAllocated  -= totalRemaining;
         emit TotalAllocatedUpdated(oldTotal, totalAllocated);
 
-        address beneficiary = allocation.beneficiary;
+        address beneficiary = a.beneficiary;
         delete allocations[allocationId];
+
         emit AllocationCancelled(allocationId, beneficiary, totalRemaining);
     }
 
-    /**
-     * @notice Updates the beneficiary for a specific allocation
-     * @dev Only callable by the owner (multisig)
-     * @param allocationId ID of the allocation
-     * @param newBeneficiary New beneficiary address
-     */
+    /// @notice Update the beneficiary address for an allocation (owner only).
     function updateBeneficiary(uint256 allocationId, address newBeneficiary) external onlyOwner {
-        Allocation storage allocation = allocations[allocationId];
-        require(allocation.exists, "Invalid allocation");
+        Allocation storage a = allocations[allocationId];
+        require(a.exists, "Invalid allocation");
         require(newBeneficiary != address(0), "Invalid beneficiary");
-        require(newBeneficiary != allocation.beneficiary, "Same beneficiary");
+        require(newBeneficiary != a.beneficiary, "Same beneficiary");
 
-        address oldBeneficiary = allocation.beneficiary;
-        allocation.beneficiary = newBeneficiary;
-        emit BeneficiaryUpdated(allocationId, oldBeneficiary, newBeneficiary);
+        address old = a.beneficiary;
+        a.beneficiary = newBeneficiary;
+
+        emit BeneficiaryUpdated(allocationId, old, newBeneficiary);
     }
 
-    /**
-     * @notice Calculates the releasable vested amount for an allocation
-     * @dev Uses Math.mulDiv for precise calculations to avoid precision loss
-     * @param allocationId ID of the allocation
-     * @return Amount of vested tokens that can be released
-     */
+    // ---- Views ----
+
+    /// @notice Linear vesting after cliff (timestamp-based).
     function getReleasableVestedAmount(uint256 allocationId) public view returns (uint256) {
-        Allocation storage allocation = allocations[allocationId];
-        if (!allocation.exists || block.timestamp < allocation.startTime + allocation.cliffSeconds || allocation.vestedAmount == 0) {
-            return 0;
+        Allocation storage a = allocations[allocationId];
+        if (!a.exists || a.vestedAmount == 0) return 0;
+
+        uint256 startPlusCliff = uint256(a.startTime) + uint256(a.cliffSeconds);
+        if (block.timestamp < startPlusCliff) return 0;
+
+        uint48 elapsedTime = uint48(block.timestamp) - a.startTime;
+
+        // Past end => fully vested minus what was already released
+        if (elapsedTime >= a.cliffSeconds + a.durationSeconds) {
+            return uint256(a.vestedAmount) - uint256(a.releasedVestedAmount);
         }
 
-        uint48 elapsedTime = uint48(block.timestamp) - allocation.startTime;
-        if (elapsedTime >= allocation.durationSeconds + allocation.cliffSeconds) {
-            return allocation.vestedAmount - allocation.releasedVestedAmount;
-        }
-
-        uint48 vestingElapsed = elapsedTime - allocation.cliffSeconds;
-        uint256 vestedReleasable = Math.mulDiv(
-            allocation.vestedAmount,
-            vestingElapsed,
-            allocation.durationSeconds,
+        // Linear portion
+        uint48 vestingElapsed = elapsedTime - a.cliffSeconds;
+        uint256 vested = Math.mulDiv(
+            uint256(a.vestedAmount),
+            uint256(vestingElapsed),
+            uint256(a.durationSeconds),
             Math.Rounding.Floor
         );
-        return vestedReleasable - allocation.releasedVestedAmount;
+        return vested - uint256(a.releasedVestedAmount);
     }
 
-    /**
-     * @notice Gets remaining vested and unlocked amounts for an allocation
-     * @param allocationId ID of the allocation
-     * @return remainingVested Remaining vested tokens
-     * @return remainingUnlocked Remaining unlocked tokens
-     */
-    function getRemainingAmounts(uint256 allocationId) external view returns (uint256 remainingVested, uint256 remainingUnlocked) {
-        Allocation storage allocation = allocations[allocationId];
-        require(allocation.exists, "Invalid allocation");
-        remainingVested = allocation.vestedAmount - allocation.releasedVestedAmount;
-        remainingUnlocked = allocation.unlockedAmount - allocation.withdrawnUnlockedAmount;
+    function getRemainingAmounts(uint256 allocationId)
+        external
+        view
+        returns (uint256 remainingVested, uint256 remainingUnlocked)
+    {
+        Allocation storage a = allocations[allocationId];
+        require(a.exists, "Invalid allocation");
+        remainingVested   = uint256(a.vestedAmount) - uint256(a.releasedVestedAmount);
+        remainingUnlocked = uint256(a.unlockedAmount) - uint256(a.withdrawnUnlockedAmount);
     }
 
-    /**
-     * @notice Gets the total token balance of the contract
-     * @return Total token balance
-     */
     function getBalance() external view tokenRequired returns (uint256) {
         return token.balanceOf(address(this));
     }
 
-    /**
-     * @notice Returns the total released tokens (vested and unlocked) across all allocations
-     * @return Total released tokens
-     */
     function getTotalReleasedTokens() external view tokenRequired returns (uint256) {
         return totalReleasedTokens;
     }
 
-    /**
-     * @notice Pauses the contract
-     * @dev Only callable by the owner (multisig)
-     */
-    function pause() external onlyOwner {
-        _pause();
+    modifier tokenRequired() {
+        require(tokenSet, "Token not set");
+        _;
     }
 
-    /**
-     * @notice Unpauses the contract
-     * @dev Only callable by the owner (multisig)
-     */
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
-    /**
-     * @notice Disables upgrades permanently after maturity
-     * @dev Only callable by the owner (multisig)
-     */
-    function disableUpgrades() external onlyOwner {
-        require(!upgradesDisabled, "Upgrades disabled");
-        require(block.timestamp >= deploymentTime + 365 days, "Cannot disable upgrades before 1 year");
-        upgradesDisabled = true;
-        emit UpgradesDisabled();
-    }
-
-    /**
-     * @notice Authorizes contract upgrades
-     * @dev Only callable by the owner (multisig)
-     * @param newImplementation Address of the new implementation
-     */
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
-        require(!upgradesDisabled, "Upgrades disabled");
-        emit Upgraded(newImplementation);
-    }
-
-    // Gap for future upgrades to avoid storage collisions
-    uint256[49] private __gap;
+    /// @dev Storage gap for future variable additions (OZ pattern).
+    /// If you add new state variables at the end in a future upgrade,
+    /// decrease the length of this array by the same number of slots.
+    uint256[50] private __gap;
 }

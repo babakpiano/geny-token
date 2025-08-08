@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Genyleap
+
 pragma solidity 0.8.30;
 
 import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -300,4 +301,9 @@ contract GenyDAO is
     function getProposalCalldatas(uint256 proposalId) external view returns (bytes[] memory) {
         return proposals[proposalId].calldatas;
     }
+
+    /// @dev Storage gap for future variable additions (OZ pattern).
+    /// If you add new state variables at the end in a future upgrade,
+    /// decrease the length of this array by the same number of slots.
+    uint256[50] private __gap;
 }

@@ -11,12 +11,12 @@ import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Vo
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
-import { IGenyGuard } from "./interfaces/IGenyGuard.sol";
+import {IGenyGuard} from "./interfaces/IGenyGuard.sol";
 
 /// @title GenyToken
 /// @author compez.eth
 /// @notice An ERC20 token with a fixed supply of 256 million, designed to empower creators and drive innovation in the Genyleap ecosystem.
-/// @dev Extends OpenZeppelin's ERC20 with burnable, permit, votes, pausability, Ownable2Step (inherits Ownable), and GenyGuard integration.
+/// @dev Extends OpenZeppelin's ERC20 with burnable, permit, votes, pausability, Ownable2Step (inherits Ownable), and optional GenyGuard integration.
 /// @custom:security-contact security@genyleap.com
 contract GenyToken is
     ERC20,
@@ -29,60 +29,43 @@ contract GenyToken is
     /// @dev Fixed total token supply (256 million tokens with 18 decimals)
     uint256 internal constant _TOTAL_SUPPLY = 2.56e8 * 1e18; // 256,000,000
 
-    /// @dev Cached token name as string for ERC20 compatibility and gas optimization
+    /// @dev Cached token name/symbol (optional; could rely on ERC20 defaults)
     string private _tokenNameStr;
-
-    /// @dev Cached token symbol as string for ERC20 compatibility and gas optimization
     string private _tokenSymbolStr;
 
-    /// @dev Metadata URI for the token, compliant with ERC-7572
+    /// @dev ERC-7572 contract-level metadata URI
     string private _contractURI;
 
-    /// @notice Reference to GenyGuard contract for recovery enforcement
+    /// @notice GenyGuard contract for recovery enforcement (optional; zero disables)
     address public immutable genyGuard;
 
     /// @notice Emitted once upon successful token deployment and initial allocation
     event Initialized(address indexed allocationContract, uint256 amount);
-
     /// @notice Emitted when token name and symbol are set during deployment
     event TokenMetadataSet(string indexed name, string indexed symbol);
-
     /// @notice Emitted when the contract metadata URI is set during deployment
     event ContractURISet(string indexed uri);
-
-    /// @notice Emitted for every transfer, including delegate votes change
-    event TransferWithVotes(address indexed from, address indexed to, uint256 amount);
-
-    /// @notice Emitted when the contract is paused
+    /// @notice Pause/unpause audit trail
     event PausedBy(address indexed owner);
-
-    /// @notice Emitted when the contract is unpaused
     event UnpausedBy(address indexed owner);
+    /// @notice Snapshot marker using EIP-6372 clock (timestamp-based)
+    event SnapshotTaken(uint48 indexed clockValue);
 
-    /// @notice Emitted when a governance snapshot is created (block-based)
-    event SnapshotTaken(uint256 indexed blockNumber);
-
-    /// @dev Custom error for zero address validation
+    // errors
     error ZeroAddressNotAllowed();
-
-    /// @dev Custom error for empty URI validation
     error URIMustBeSet();
-
-    /// @dev Custom error for receiving Ether
     error CannotReceiveEther();
-
-    /// @dev Custom error for recovery transfer enforcement
     error OnlyToRecovery();
+    error InvalidRecoveryWallet();
+    error InvalidGenyGuardAddress(); // non-zero but not a contract
 
-    /// @notice Prevents accidental sending of Ether to this contract.
+    /// @notice Prevent accidental ETH
     receive() external payable { revert CannotReceiveEther(); }
     fallback() external payable { revert CannotReceiveEther(); }
 
-    /// @notice Deploys the token and allocates the total supply to the specified contract
-    /// @dev Initializes token metadata and mints the fixed supply to the allocation contract.
-    /// @param allocationContract Address to receive the initial token supply and become the owner
-    /// @param contractURI_ Metadata URI for the token (ERC-7572)
-    /// @param genyGuard_ Address of GenyGuard contract
+    /// @param allocationContract Receiver of initial supply & initial owner
+    /// @param contractURI_ ERC-7572 contract URI
+    /// @param genyGuard_ GenyGuard address (zero disables recovery enforcement)
     constructor(
         address allocationContract,
         string memory contractURI_,
@@ -93,10 +76,13 @@ contract GenyToken is
         Ownable(allocationContract)
     {
         if (allocationContract == address(0)) revert ZeroAddressNotAllowed();
-        if (genyGuard_ == address(0)) revert ZeroAddressNotAllowed();
         if (bytes(contractURI_).length == 0) revert URIMustBeSet();
+
+        // Allow null guard. If provided, must be a contract to avoid ABI decode reverts.
+        if (genyGuard_ != address(0)) {
+            if (genyGuard_.code.length == 0) revert InvalidGenyGuardAddress();
+        }
         genyGuard = genyGuard_;
-        _transferOwnership(allocationContract);
 
         _tokenNameStr = "Genyleap";
         _tokenSymbolStr = "GENY";
@@ -110,14 +96,12 @@ contract GenyToken is
         emit Initialized(allocationContract, totalSupply);
     }
 
-    /// @notice Returns the contract metadata URI (ERC-7572)
-    /// @return The metadata URI as a string
+    /// @notice ERC-7572 metadata URI
     function contractURI() external view returns (string memory) {
         return _contractURI;
     }
 
-    /// @notice Returns the fixed total supply of the token
-    /// @return The total supply in wei (256 million tokens with 18 decimals)
+    /// @notice Fixed total supply (informational)
     function totalSupplyConstant() external pure returns (uint256) {
         return _TOTAL_SUPPLY;
     }
@@ -132,17 +116,21 @@ contract GenyToken is
         return _tokenSymbolStr;
     }
 
-    /// @dev Updates token state for transfers, including vote tracking, pausability, and recovery guard
+    /// @dev Transfer/update hook with votes/pause + optional recovery enforcement
     function _update(address from, address to, uint256 amount)
         internal
         override(ERC20, ERC20Votes, ERC20Pausable)
     {
-        // Enforce recovery: if from is in recovery mode, only allow to recovery wallet
-        if (from != address(0) && from != to && IGenyGuard(genyGuard).isRecoveryModeActive(from)) {
-            if (to != IGenyGuard(genyGuard).getRecoveryWallet(from)) revert OnlyToRecovery();
+        if (genyGuard != address(0) && from != address(0) && from != to) {
+            if (IGenyGuard(genyGuard).isRecoveryModeActive(from)) {
+                address rw = IGenyGuard(genyGuard).getRecoveryWallet(from);
+                if (rw == address(0) || rw == from) revert InvalidRecoveryWallet();
+                if (to != rw) revert OnlyToRecovery();
+            }
         }
+
         super._update(from, to, amount);
-        emit TransferWithVotes(from, to, amount);
+        // No extra event; rely on ERC20 Transfer + ERC20Votes events
     }
 
     /// @notice Pauses all token transfers and burns
@@ -157,25 +145,34 @@ contract GenyToken is
         emit UnpausedBy(msg.sender);
     }
 
-    /// @notice No-op inheritance fix to enable permit and votes functionality with shared nonce behavior
-    function nonces(
-        address owner
-    ) public view override(ERC20Permit, Nonces) returns (uint256) {
+    /// @notice Multiple inheritance fix for shared nonces (permit/votes)
+    function nonces(address owner)
+        public
+        view
+        override(ERC20Permit, Nonces)
+        returns (uint256)
+    {
         return super.nonces(owner);
     }
 
-    /// @notice Creates a snapshot of current voting balances for governance or airdrop purposes.
+    /// @notice Off-chain–friendly snapshot marker using EIP-6372 clock
     function snapshot() external onlyOwner {
-        emit SnapshotTaken(block.number);
+        emit SnapshotTaken(clock());
     }
 
-    /// @notice Delegate votes to self for enabling snapshot-like balance tracking
+    /// @notice Convenience self-delegation helper
     function delegateToSelf() external {
         delegate(msg.sender);
+        // NOTE: ERC20Votes emits DelegateChanged / DelegateVotesChanged
     }
 
-    /// @dev Overrides clock to use timestamp mode for time-based snapshots (EIP-6372 compliance).
+    /// @dev EIP-6372 timestamp clock (OZ Governor >= 4.9 compatible)
     function clock() public view override returns (uint48) {
         return uint48(block.timestamp);
+    }
+
+    /// @dev EIP-6372 clock mode descriptor
+    function CLOCK_MODE() public pure override returns (string memory) {
+        return "mode=timestamp";
     }
 }

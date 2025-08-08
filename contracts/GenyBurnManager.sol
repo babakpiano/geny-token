@@ -17,7 +17,6 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 /// @dev Burns tokens from the allocationManager, with a max burn of 25.6M tokens, 10% per burn, and a 1-day cooldown.
 ///      Uses UUPS upgradeability, Ownable2Step, ReentrancyGuard, and Pausable for security.
 ///      Assumes GENY token implements ERC20Burnable for burning.
-/// @custom:security-contact security@genyleap.com
 contract GenyBurnManager is
     Initializable,
     Ownable2StepUpgradeable,
@@ -27,19 +26,26 @@ contract GenyBurnManager is
 {
     using SafeERC20 for IERC20;
 
-    IERC20 public token;                   ///< GENY token contract (ERC20Burnable)
-    address public dao;                    ///< GenyDAO contract for governance
-    address public allocationManager;      ///< GenyAllocation contract (token supply source)
-    uint48 public lastBurnTimestamp;       ///< Last burn timestamp
-    uint256 public burnCount;              ///< Number of burns performed
-    uint256 public totalBurned;            ///< Total tokens burned
+    IERC20 public token;              // GENY token contract (must support ERC20Burnable)
+    address public dao;               // GenyDAO contract
+    address public allocationManager; // GenyAllocation contract (token source)
 
-    uint256 public constant MAX_TOTAL_BURN = 25_600_000 * 1e18; ///< Max 25.6M tokens to burn
-    uint48  public constant BURN_COOLDOWN = 1 days;              ///< 1-day cooldown between burns
-    uint32  public constant BURN_MAX_PERCENT = 10_00;            ///< Max 10% of allocationManager balance per burn (1000 = 10%)
+    uint48 public lastBurnTimestamp;  // Last burn timestamp
+    uint256 public burnCount;         // Number of burns performed
+    uint256 public totalBurned;       // Total tokens burned
+
+    uint256 public constant MAX_TOTAL_BURN = 25_600_000 * 1e18; // Max 25.6M tokens to burn overall
+    uint48  public constant BURN_COOLDOWN = 1 days;              // 1-day cooldown between burns
+    uint32  public constant BURN_MAX_PERCENT = 10_00;            // Max 10% of allocationManager balance per burn (1000 = 10%)
 
     /// @notice Emitted when tokens are burned
     event TokensBurned(uint256 indexed burnId, uint256 amount);
+
+    /// @notice Emitted when DAO address is updated
+    event DAOUpdated(address indexed oldDAO, address indexed newDAO);
+
+    /// @notice Emitted when AllocationManager address is updated
+    event AllocationManagerUpdated(address indexed oldAllocationManager, address indexed newAllocationManager);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -74,23 +80,45 @@ contract GenyBurnManager is
         burnCount = 1;
     }
 
-    /// @notice Burns tokens from the allocationManager (via transfer & burn)
-    /// @param amount Amount of tokens to burn (must not exceed 10% allocationManager balance)
+    /// @notice Burns tokens from the allocationManager (transferFrom -> burn)
+    /// @param amount Requested amount to burn; must be <= 10% of allocationManager balance.
+    /// @dev If the token has transfer fees, the actually received amount is burned and accounted.
     function burnFromContract(uint256 amount) external onlyOwnerOrDAO nonReentrant whenNotPaused {
         require(block.timestamp >= lastBurnTimestamp + BURN_COOLDOWN, "Burn cooldown active");
+        require(amount > 0, "Invalid amount");
+
         uint256 maxBurn = (token.balanceOf(allocationManager) * BURN_MAX_PERCENT) / 1e4;
         require(amount <= maxBurn, "Exceeds max burn limit");
         require(totalBurned + amount <= MAX_TOTAL_BURN, "Exceeds total burn cap");
-        require(amount > 0, "Invalid amount");
         require(token.allowance(allocationManager, address(this)) >= amount, "Insufficient allowance");
 
-        lastBurnTimestamp = uint48(block.timestamp);
-        totalBurned += amount;
-
+        // Pull tokens from allocationManager
+        uint256 beforeBal = token.balanceOf(address(this));
         token.safeTransferFrom(allocationManager, address(this), amount);
-        ERC20Burnable(address(token)).burn(amount);
+        uint256 received = token.balanceOf(address(this)) - beforeBal;
+        require(received > 0, "No tokens received");
 
-        emit TokensBurned(burnCount++, amount);
+        // Burn actual received amount
+        ERC20Burnable(address(token)).burn(received);
+
+        lastBurnTimestamp = uint48(block.timestamp);
+        totalBurned += received;
+
+        emit TokensBurned(burnCount++, received);
+    }
+
+    /// @notice Updates the DAO address
+    function setDAO(address _dao) external onlyOwner {
+        require(_dao != address(0), "Invalid DAO");
+        emit DAOUpdated(dao, _dao);
+        dao = _dao;
+    }
+
+    /// @notice Updates the AllocationManager address
+    function setAllocationManager(address _am) external onlyOwner {
+        require(_am != address(0), "Invalid allocation manager");
+        emit AllocationManagerUpdated(allocationManager, _am);
+        allocationManager = _am;
     }
 
     /// @notice Pauses the contract, preventing burns
@@ -103,12 +131,17 @@ contract GenyBurnManager is
         _unpause();
     }
 
-    /// @dev Authorizes contract upgrades (UUPS)
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
-
     /// @dev Restricts functions to owner or DAO contract
     modifier onlyOwnerOrDAO() {
         require(msg.sender == owner() || msg.sender == dao, "Not authorized");
         _;
     }
+
+    /// @dev Authorizes contract upgrades (UUPS)
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+
+    /// @dev Storage gap for future variable additions (OZ pattern).
+    /// If you add new state variables at the end in a future upgrade,
+    /// decrease the length of this array by the same number of slots.
+    uint256[50] private __gap;
 }
